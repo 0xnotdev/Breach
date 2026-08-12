@@ -29,7 +29,7 @@ describe("security boundary", () => {
   });
 
   it("proves a fake canary is absent from every retention surface with one fingerprint", async () => {
-    const fixture = new URL("../../../fixtures/canary-repository/.env", import.meta.url);
+    const fixture = new URL("../../../fixtures/canary-repository/credential.txt", import.meta.url);
     const rawFile = await readFile(fixture, "utf8");
     const rawCanary = rawFile.trim().slice(rawFile.indexOf("=") + 1);
     const key = "test-only-fingerprint-key-32-bytes-minimum";

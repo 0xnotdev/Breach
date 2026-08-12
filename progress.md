@@ -487,3 +487,8 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm test` passed: 9 files, 53 tests.
 - `npm run build` passed for the web application and all nine library workspaces.
 - CP13 accepted and ready to commit/push.
+
+### 2026-08-12 20:22 IST — CP13 publication correction
+
+- Committed and pushed the initial CP13 hardening implementation as `d70bd05` and verified local/remote equality.
+- The post-push tracked-file audit found the root `.env` ignore rule also excluded the controlled canary fixture. Renamed the fixture to non-ignored `credential.txt`, updated the proof test, and prepared a corrective checkpoint commit so the reproducible fixture is present on GitHub.
