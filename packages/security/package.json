@@ -6,5 +6,5 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": { "build": "tsc -b", "test": "vitest run src/security.test.ts" },
-  "dependencies": { "@breach/analyzers": "0.1.0", "fast-xml-parser": "5.2.5", "yaml": "2.8.1" }
+  "dependencies": { "@breach/analyzers": "0.1.0", "fast-xml-parser": "5.10.1", "yaml": "2.9.0" }
 }

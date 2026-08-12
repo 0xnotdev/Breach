@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import { createApiHandler, createDemoDataSource, readApiConfig } from "./index.js";
 
 describe("operator API runtime", () => {
@@ -8,6 +9,8 @@ describe("operator API runtime", () => {
   });
 
   it("serves health/readiness and sanitized demo data through the real router", async () => {
+    const fixture = await readFile(new URL("../../../fixtures/canary-repository/credential.txt", import.meta.url), "utf8");
+    const raw = fixture.slice(fixture.indexOf("=") + 1).trim();
     const token = "operator-token-32-bytes-minimum";
     const handler = createApiHandler(createDemoDataSource(), token, () => Promise.resolve(true));
     expect((await handler(new Request("http://local/healthz"))).status).toBe(200);
@@ -18,6 +21,6 @@ describe("operator API runtime", () => {
     expect(body).toContain("fixture/canary");
     expect(body).toContain("fingerprint");
     expect(body).not.toContain("AWS_SECRET_ACCESS_KEY");
-    expect(body).not.toContain("0123456789AbCdEf");
+    expect(body).not.toContain(raw);
   });
 });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import { readWorkerConfig, runControlledDemo } from "./runtime.js";
+
+async function controlledCanary(): Promise<string> {
+  const fixture = await readFile(new URL("../../../fixtures/canary-repository/credential.txt", import.meta.url), "utf8");
+  return fixture.slice(fixture.indexOf("=") + 1).trim();
+}
 
 describe("worker runtime", () => {
   it("validates bounded least-privilege configuration", () => {
@@ -10,13 +16,14 @@ describe("worker runtime", () => {
   });
 
   it("runs discovery through review with no source persistence", async () => {
-    const result = await runControlledDemo();
+    const raw = await controlledCanary();
+    const result = await runControlledDemo(raw);
     expect(result.states).toEqual(["DISCOVERED", "WAITING_FOR_COMMIT", "READY", "SCANNING", "SCANNED_FINDINGS"]);
     expect(result.finding.reviewState).toBe("CONFIRMED");
     expect(result.finding.category).toBe("secret_exposure");
     expect(result.metrics).toContainEqual({ name: "scan.findings", value: 1 });
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("AWS_SECRET_ACCESS_KEY");
-    expect(serialized).not.toContain("0123456789AbCdEf");
+    expect(serialized).not.toContain(raw);
   });
 });

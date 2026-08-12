@@ -71,8 +71,9 @@ export async function runWorkerCycle(config: WorkerConfig, pool = new Pool({ con
   return { nextCursor, processed };
 }
 
-export async function runControlledDemo() {
-  const raw = "0123456789AbCdEfGhIjKlMnOpQrStUvWxYz+/=="; const states: CandidateState[] = ["DISCOVERED", "WAITING_FOR_COMMIT"];
+export async function runControlledDemo(raw: string) {
+  if (raw.length === 0) throw new Error("Controlled demo requires a fake canary value");
+  const states: CandidateState[] = ["DISCOVERED", "WAITING_FOR_COMMIT"];
   const findings: SanitizedFinding[] = []; const metrics: Array<{ name: string; value: number }> = [];
   const store: LifecycleStore = {
     transition: (_id, state) => { states.push(state); return Promise.resolve(); }, scheduleCommitCheck: () => Promise.resolve(), claimScan: () => Promise.resolve(true),

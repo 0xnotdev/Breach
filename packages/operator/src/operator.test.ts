@@ -108,6 +108,39 @@ const request = (path: string, init: RequestInit = {}) =>
   });
 
 describe("sanitized operator HTTP/SSE interface", () => {
+  it("rejects invalid construction, filters, routes, stream cursors, and review bodies", async () => {
+    expect(() => new OperatorRouter(new MemoryOperatorData([]), "short")).toThrow();
+    const item = finding({ category: "configuration", severity: "medium", detectedAt: "2026-08-12T12:00:00.000Z" });
+    const data = new MemoryOperatorData([item]);
+    const router = new OperatorRouter(data, "operator-test-token");
+    for (const query of ["severity=critical", "family=secrets", "level=probable", "language=python", "repository=other%2Frepo", "review=CONFIRMED", "since=invalid", "since=2026-08-12T13%3A00%3A00.000Z"]) {
+      const response = await router.handle(request(`/api/findings?${query}`));
+      await expect(response.json()).resolves.toEqual({ findings: [] });
+    }
+    expect((await router.handle(request("/api/stream?after=-1"))).status).toBe(400);
+    expect((await router.handle(request(`/api/findings/${randomUUID()}`))).status).toBe(404);
+    expect((await router.handle(request("/api/unknown"))).status).toBe(404);
+    for (const body of ["null", "[]", '{"state":"UNREVIEWED"}', '{"state":"CONFIRMED","note":1}', "not-json"]) {
+      const response = await router.handle(request(`/api/findings/${item.findingId}/review`, { method: "POST", body, headers: { "content-type": "application/json" } }));
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("rejects invalid event/metric metadata and emits safe commit links without paths", async () => {
+    const item = finding({ category: "vulnerable_dependency", severity: "low" });
+    const data = new MemoryOperatorData([item]);
+    const router = new OperatorRouter(data, "operator-test-token");
+    const detail = await router.handle(request(`/api/findings/${item.findingId}`));
+    await expect(detail.json()).resolves.toMatchObject({ openOnGitHub: `https://github.com/fixture/operator/commit/${"a".repeat(40)}` });
+    const event = data.events[0];
+    if (event === undefined) throw new Error("Fixture event is missing");
+    data.events[0] = { ...event, fullName: "invalid" };
+    expect((await router.handle(request("/api/stream"))).status).toBe(400);
+    data.events[0] = { eventId: 1, repoId: 1401, fullName: "fixture/operator", state: "SCANNED_FINDINGS", occurredAt: "2026-08-12T12:00:00.000Z" };
+    data.metrics[0] = { name: "INVALID", value: Number.NaN, unit: "bad unit" };
+    expect((await router.handle(request("/api/system"))).status).toBe(400);
+  });
+
   it("requires private operator authentication", async () => {
     const router = new OperatorRouter(new MemoryOperatorData([]), "operator-test-token");
     const response = await router.handle(new Request("http://operator.local/api/findings"));
@@ -213,5 +246,10 @@ describe("sanitized operator HTTP/SSE interface", () => {
     const text = await response.text();
     expect(text).toBe('{"error":"invalid_request"}');
     expect(text).not.toContain(rawCanary);
+
+    for (const note of ["password=do-not-store", "-----BEGIN PRIVATE KEY-----", "A".repeat(48), "x".repeat(1_001)]) {
+      const rejected = await router.handle(request(`/api/findings/${item.findingId}/review`, { method: "POST", body: JSON.stringify({ state: "UNCERTAIN", note }) }));
+      expect(rejected.status).toBe(400);
+    }
   });
 });

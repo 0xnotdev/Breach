@@ -21,7 +21,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP12 Stream/System UI | Complete | 6 render + 2 browser behaviors; all gates passed |
 | CP13 Hardening/canary | Complete | 7 security behaviors; Compose valid; all gates passed |
 | CP14 Runnable product/ops | Complete | 6 runtime/ops tests; 3 images; real DB/API/web smoke; all gates passed |
-| CP15 Final verification | Pending | — |
+| CP15 Final verification | Complete | Clean lockfile install; 72 tests; 90%+ coverage; UI/browser, DB, image, audit gates passed |
 
 ## Progress log
 
@@ -577,3 +577,64 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `docker compose config --quiet` passed.
 - API, worker, and web images built from the tracked Linux context; real migration, seed, health, authenticated API, and web checks passed against PostgreSQL.
 - CP14 accepted and ready to commit/push.
+
+### 2026-08-12 21:15 IST — CP14 published / CP15 started
+
+- Committed CP14 as `6f96f39` (`checkpoint 14: ship runnable product and operations`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `6f96f39ed3d6f3c6a429bfb9723d49b92214ff3d`; the worktree was clean.
+- Began CP15 with dependency audit and coverage/clean-install planning.
+
+### 2026-08-12 21:17 IST — CP15 dependency audit finding
+
+- `npm audit --omit=dev --audit-level=high` reported a critical set of XML parser advisories in `fast-xml-parser@5.2.5` and a moderate deep-nesting advisory in `yaml@2.8.1`.
+- Updated to the audit-recommended fixed releases `fast-xml-parser@5.10.1` and `yaml@2.9.0`; the existing DTD/entity/depth denial tests remain the acceptance contract.
+
+### 2026-08-12 21:20 IST — CP15 coverage RED/GREEN iterations
+
+- Added defensive branch contracts for invalid GitHub responses and policy bounds, operator inputs and metadata, lifecycle/scheduling storage bounds, parser/display/canary edge cases, terminal orchestrator outcomes, and snapshot tree/path/budget/cleanup behavior.
+- Fixed strict lint/type errors exposed by the new tests without weakening compiler or lint rules.
+- The first measured package run was below the required branch gate at 88.66%; added missing bounded-snapshot behaviors before changing the threshold.
+- The next run passed all 72 service/domain tests at 96.18% statements, 90.10% branches, 98.60% functions, and 96.18% lines.
+- Enforced 90% for all four dimensions in `vitest.config.ts` and replaced CI's unmeasured test command with `test:coverage`.
+
+### 2026-08-12 21:24 IST — CP15 zero-retention and dependency audit
+
+- Removed the controlled canary value duplicated in worker/API test source. The demo and tests now read the single labeled fixture and inject it through the public demo seam.
+- Added a tracked-file credential audit that permits only the documented fake fixture/token shapes, proves the raw canary exists in exactly one controlled fixture, and rejects provider-shaped tokens or complete private-key material elsewhere.
+- `npm audit --omit=dev --audit-level=high` passed with zero production vulnerabilities after the parser upgrades.
+- The full toolchain audit initially exposed six high-severity advisories. Upgraded React/RSC, Vite, vinext, Vite plugins, TypeScript ESLint, Babel transitive dependencies, and related lockfile entries; the complete verification suite remained green.
+- The full audit now has one bounded upstream exception: vinext's build-only `image-size@2.0.2` dependency is covered by two parser denial-of-service advisories for ICNS/JXL/HEIF and has no fixed release. Breach never accepts, sizes, or parses repository/operator images; the package is absent from the production audit path. This is not a production or build blocker and is recorded rather than hidden.
+- `npm run audit:secrets` passed across all tracked paths: no committed credential and no duplicate canary value.
+
+### 2026-08-12 21:28 IST — CP15 clean-install and complete verification
+
+- Ran `npm ci --ignore-scripts --no-audit --no-fund` from the authoritative root lockfile after all upgrades; 555 packages installed successfully.
+- Ran `npm run verify` from that clean install. Lint and strict typecheck passed; 12 test files/72 tests passed with enforced coverage; all 12 workspaces built; 6 server-render criteria and 2 Chromium journeys passed; production dependency and tracked-secret audits passed.
+- Rebuilt API, worker, and web Linux images from the tracked context on the upgraded lockfile; all three images passed clean npm install and production build stages.
+- `docker compose config --quiet` passed with controlled validation values.
+
+### 2026-08-12 21:31 IST — CP15 migration check diagnosis and GREEN
+
+- The first migration command appended an argument to the API image entrypoint and started the API instead; it failed safely without altering the migration.
+- Retried with an explicit Node entrypoint. PostgreSQL rejected the connection because the retained CP14 development volume had been initialized with a different password, confirming volume persistence rather than a migration defect.
+- Repeated the check in isolated Compose project `breach-cp15` with a fresh disposable volume. PostgreSQL became healthy and the API image printed `Metadata migration complete`; the temporary container, network, and volume were then removed.
+- Added the same pinned PostgreSQL service and executable migration step to CI so future checkouts validate the schema against a real database.
+
+### UI acceptance evidence matrix
+
+| Report criterion | Reproducible evidence |
+|---|---|
+| 1. New sanitized finding appears in Findings | API sanitization behavior; `apps/web/tests/rendered-html.test.mjs`; first Chromium journey |
+| 2. Feed explains severity, exploitability, and family | Findings server-render behavior and browser filter journey |
+| 3. Detail explains entry/source/flow/sink, barriers, limits, coverage | Investigation server-render behavior and first Chromium journey |
+| 4. Confirmed/false-positive/uncertain review feeds metrics | Operator review contracts, Investigation behavior, browser rejection/success journey, System validation metrics |
+| 5. Stream exposes near-real-time metadata-only transitions | Operator SSE/stream contracts, Stream render behavior, second Chromium journey |
+| 6. System exposes throughput, quota, latency, precision, zero retention | System render behavior and second Chromium journey |
+| 7. Secret findings never expose the raw credential | Analyzer redaction tests, API/UI tests, controlled demo, canary auditor, tracked-secret audit |
+| 8. Frontend telemetry/errors/logs contain no source or raw secret | Security canary surface audit, metadata-only browser assertions, controlled demo serialization proof |
+
+### 2026-08-12 21:34 IST — CP15 acceptance
+
+- Scanned tracked project sources for unresolved task markers and focused/skipped required tests; no unexplained TODO/FIXME, `.only`, or skipped test was found.
+- `git diff --check` passed and no unmerged path exists.
+- CP00–CP15 are complete. Final publication and local/remote/worktree equality evidence will be appended by the publication commit.

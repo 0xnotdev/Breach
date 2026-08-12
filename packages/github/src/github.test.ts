@@ -34,6 +34,15 @@ const response = (
 ): GitHubResponse => ({ status, body, headers });
 
 describe("GitHub metadata intake and commit authorization", () => {
+  it("validates policy bounds and dispatcher recovery/absolute URLs", async () => {
+    expect(() => new CandidatePolicy({ minimumScore: 1, capacityRatio: -0.1 })).toThrow(RangeError);
+    expect(() => new CandidatePolicy({ minimumScore: 1, capacityRatio: 1.1 })).toThrow(RangeError);
+    let calls = 0;
+    const dispatcher = new AsyncSerialDispatcher({ get: (url) => { calls += 1; return calls === 1 ? Promise.reject(new Error("transient")) : Promise.resolve(response(200, url)); } });
+    await expect(dispatcher.get("https://api.github.com/absolute")).rejects.toThrow("transient");
+    await expect(dispatcher.get("relative")).resolves.toMatchObject({ body: "https://api.github.com/relative" });
+  });
+
   it("prioritizes backend metadata without reading repository content", () => {
     const policy = new CandidatePolicy({ minimumScore: 5, capacityRatio: 0.08 });
 
@@ -192,5 +201,40 @@ describe("GitHub metadata intake and commit authorization", () => {
     });
     expect(applyPushEvent(event, { repoId: 1001, state: "SKIPPED" })).toEqual({ kind: "ignored" });
     expect(applyPushEvent(event, null)).toEqual({ kind: "ignored" });
+    for (const invalid of [null, {}, { type: "Other" }, { type: "PushEvent", repo: null, payload: {} }, { type: "PushEvent", repo: { id: 1002, name: "x/y" }, payload: { head: "d".repeat(40) } }, { type: "PushEvent", repo: { id: 1001, name: "x/y" }, payload: { head: "0".repeat(40) } }]) {
+      expect(applyPushEvent(invalid, { repoId: 1001, state: "WAITING_FOR_COMMIT" })).toEqual({ kind: "ignored" });
+    }
+  });
+
+  it("rejects malformed discovery pages and handles empty/rate-limited discovery", async () => {
+    const sink = { recordDiscoveryPage: () => Promise.resolve() };
+    const policy = new CandidatePolicy({ minimumScore: 0, capacityRatio: 1 });
+    for (const scripted of [response(500, []), response(200, {}), response(200, [null]), response(200, [{ id: 1, name: "x", full_name: "x/y", html_url: "https://github.com/x/y", description: 4, fork: false }])]) {
+      const collector = new DiscoveryCollector({ dispatcher: new AsyncSerialDispatcher(new ScriptedTransport([scripted])), policy, sink });
+      await expect(collector.catchUp(0)).rejects.toThrow();
+    }
+    const limited = new DiscoveryCollector({ dispatcher: new AsyncSerialDispatcher(new ScriptedTransport([response(403, [], { "x-ratelimit-reset": "2000000000" })])), policy, sink });
+    await expect(limited.catchUp(0)).rejects.toMatchObject({ status: 403 });
+    const empty = new DiscoveryCollector({ dispatcher: new AsyncSerialDispatcher(new ScriptedTransport([response(200, [])])), policy, sink });
+    await expect(empty.catchUp(7)).resolves.toBe(7);
+  });
+
+  it("covers every commit-gate defensive outcome", async () => {
+    const now = new Date("2026-08-12T12:00:00.000Z");
+    const invalidName = new CommitGate(new AsyncSerialDispatcher(new ScriptedTransport([])), () => now);
+    await expect(invalidName.check({ repoId: 1, fullName: "invalid", attempts: 0 })).resolves.toMatchObject({ kind: "failed" });
+    const cases: Array<{ response: GitHubResponse; attempts?: number; kind: string }> = [
+      { response: response(200, []), attempts: 5, kind: "closed" },
+      { response: response(403, [], { "x-ratelimit-reset": "2000000000" }), kind: "rate_limited" },
+      { response: response(500, []), kind: "failed" },
+      { response: response(200, {}), kind: "failed" },
+      { response: response(200, ["bad"]), kind: "failed" },
+      { response: response(200, [{ sha: "bad" }]), kind: "failed" },
+      { response: response(200, [{ sha: "b".repeat(40) }]), kind: "ready" },
+    ];
+    for (const item of cases) {
+      const gate = new CommitGate(new AsyncSerialDispatcher(new ScriptedTransport([item.response])), () => now);
+      await expect(gate.check({ repoId: 1, fullName: "fixture/repo", attempts: item.attempts ?? 0 })).resolves.toMatchObject({ kind: item.kind });
+    }
   });
 });

@@ -198,4 +198,29 @@ describe("metadata persistence seam", () => {
       { value: 1, labels: { status: "SCANNED_NO_FINDINGS" } },
     ]);
   });
+
+  it("rejects malformed lifecycle, review, scan, schedule, and metric inputs", async () => {
+    await expect(store.recordDiscoveryPage("", -1, [])).rejects.toThrow("Invalid discovery cursor");
+    await expect(store.getDiscoveryCursor("missing")).resolves.toBeNull();
+    await expect(store.transitionCandidate(999, "READY")).rejects.toThrow("does not exist");
+    await expect(store.reviewFinding(randomUUID(), "CONFIRMED")).rejects.toThrow("does not exist");
+    await expect(store.scheduleCommitCheck(1, new Date("invalid"), -1)).rejects.toThrow("Invalid commit recheck");
+    await expect(store.claimScan(1, "bad", new Date("invalid"))).rejects.toThrow("Invalid scan claim");
+    await expect(store.getScan(1, "e".repeat(40))).resolves.toBeNull();
+    for (const [name, value, labels] of [["INVALID", 1, {}], ["valid.metric", Number.NaN, {}], ["valid.metric", 1, { "Bad-Key": "x" }], ["valid.metric", 1, { safe: "x".repeat(81) }]] as const) {
+      await expect(store.recordMetric(name, value, labels)).rejects.toThrow();
+    }
+  });
+
+  it("supports note-free reviews, scheduling, alias transitions, batches, and label fallback", async () => {
+    const repoId = 601;
+    await store.recordDiscoveryPage("public-repositories", repoId, [{ repoId, fullName: "fixture/edges", htmlUrl: "https://github.com/fixture/edges", discoveredAt: new Date("2026-08-12T12:00:00.000Z"), priorityScore: 1, candidateState: "WAITING_FOR_COMMIT" }]);
+    await store.scheduleCommitCheck(repoId, new Date("2026-08-12T12:05:00.000Z"), 2);
+    await store.transition(repoId, "READY");
+    const findingId = randomUUID();
+    await store.saveFindings([{ findingId, detectedAt: "2026-08-12T12:00:00.000Z", repository: { id: repoId, fullName: "fixture/edges", url: "https://github.com/fixture/edges" }, revision: { ref: "HEAD", sha: "f".repeat(40) }, category: "configuration", severity: "medium", confidence: .8, reviewState: "UNREVIEWED" }]);
+    await expect(store.reviewFinding(findingId, "UNCERTAIN")).resolves.not.toHaveProperty("reviewNote");
+    await pool.query("INSERT INTO metric_samples(metric_name, measured_at, metric_value, labels) VALUES ('label.fallback', CURRENT_TIMESTAMP, 1, 'null')");
+    await expect(store.getMetricSamples("label.fallback")).resolves.toEqual([{ value: 1, labels: {} }]);
+  });
 });

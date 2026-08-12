@@ -5,6 +5,19 @@ import { SecretScanner } from "@breach/analyzers";
 import { CanaryAuditor, EgressPolicy, escapeUntrustedText, parseSafeXml, parseSafeYaml } from "./index.js";
 
 describe("security boundary", () => {
+  it("rejects invalid parser/display/auditor bounds and exercises safe scalar forms", () => {
+    for (const bounds of [{ maxBytes: 0, maxDepth: 2 }, { maxBytes: 2, maxDepth: 2 }, { maxBytes: 100, maxDepth: 0 }, { maxBytes: 100, maxDepth: 65 }]) expect(() => parseSafeYaml("abc", bounds)).toThrow();
+    expect(() => parseSafeYaml("value: [", { maxBytes: 100, maxDepth: 3 })).toThrow();
+    expect(parseSafeYaml("- one\n- two\n", { maxBytes: 100, maxDepth: 2 })).toEqual(["one", "two"]);
+    expect(parseSafeXml('<x enabled="true">safe</x>', { maxBytes: 100, maxDepth: 2 })).toEqual({ x: { "@_enabled": "true", "#text": "safe" } });
+    expect(() => escapeUntrustedText("x", 1)).toThrow();
+    expect(escapeUntrustedText("a\tb\nc\rd\u0080", 100)).toBe("a\\tb\\nc\\rd\\u{80}");
+    expect(() => new CanaryAuditor("short", "x")).toThrow();
+    const auditor = new CanaryAuditor("raw-canary-value-123", "a".repeat(64));
+    expect(() => auditor.audit({ none: "" })).toThrow(/exactly one/i);
+    expect(() => auditor.audit({ one: "a".repeat(64), two: "a".repeat(64) })).toThrow(/observed 2/i);
+  });
+
   it("allows only declared service destinations and never follows repository URLs", () => {
     const policy = new EgressPolicy({ internalHosts: ["postgres", "api"] });
     expect(policy.assertAllowed("https://api.github.com/repos/o/r/git/trees/head").hostname).toBe("api.github.com");

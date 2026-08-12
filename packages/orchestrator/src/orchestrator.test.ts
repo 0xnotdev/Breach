@@ -115,6 +115,24 @@ const osv: OsvTransport = {
 };
 
 describe("scan orchestration lifecycle", () => {
+  it("handles rate-limit, closed, and failed gates without reading snapshots", async () => {
+    for (const outcome of [{ kind: "rate_limited", retryAt: new Date("2026-08-12T12:01:00.000Z") }, { kind: "closed", reason: "not_public_or_gone" }, { kind: "failed", reason: "unexpected_status" }] as const) {
+      const store = new MemoryLifecycleStore(); let reads = 0;
+      const orchestrator = new ScanOrchestrator({ gate: { check: () => Promise.resolve(outcome) }, snapshots: { read: () => { reads += 1; return Promise.resolve(new FakeSnapshot()); } }, store, secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"), osv, dataflow: new PassiveExploitabilityAnalyzer() });
+      const result = await orchestrator.process({ repoId: 1, fullName: "fixture/gate", attempts: 0 });
+      expect(result.kind).toBe(outcome.kind === "failed" ? "failed" : outcome.kind);
+      expect(reads).toBe(0);
+      expect(store.transitions).toContain(outcome.kind === "rate_limited" ? "RATE_LIMITED" : "FAILED");
+    }
+  });
+
+  it("records a complete scan with no findings", async () => {
+    const store = new MemoryLifecycleStore();
+    const emptyCoverage = { ...completeCoverage, filesSeen: 0, filesAnalyzed: 0, bytesInspected: 0, languagesModeled: [] };
+    const orchestrator = new ScanOrchestrator({ gate: readyGate, snapshots: { read: () => Promise.resolve({ files: [], coverage: emptyCoverage, release() {} }) }, store, secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"), osv, dataflow: new PassiveExploitabilityAnalyzer() });
+    await expect(orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 })).resolves.toMatchObject({ kind: "scanned", state: "SCANNED_NO_FINDINGS", findingCount: 0 });
+  });
+
   it("moves a committed HEAD through analysis and persists only sanitized findings", async () => {
     const store = new MemoryLifecycleStore();
     const snapshot = new FakeSnapshot();

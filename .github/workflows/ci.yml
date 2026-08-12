@@ -8,6 +8,22 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql://breach:ci-only-password@127.0.0.1:5432/breach
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_DB: breach
+          POSTGRES_USER: breach
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breach -d breach"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -18,10 +34,13 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:coverage
       - run: npm run build
+      - run: npm run migrate --workspace @breach/api
       - run: npm run test --workspace @breach/web
       - run: npm run test:browser --workspace @breach/web
+      - run: npm run audit:dependencies
+      - run: npm run audit:secrets
       - run: docker compose config --quiet
         env:
           GITHUB_TOKEN: validation-placeholder

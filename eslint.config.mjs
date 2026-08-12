@@ -8,6 +8,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/build/**",
       "apps/web/**",
+      "scripts/**",
       "eslint.config.mjs",
       "vitest.config.ts",
     ],
