@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    { "path": "../analyzers" },
+    { "path": "../contracts" },
+    { "path": "../dataflow" },
+    { "path": "../github" },
+    { "path": "../snapshot" }
+  ],
+  "include": ["src/**/*.ts"]
+}

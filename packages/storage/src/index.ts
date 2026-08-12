@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import {
   candidateStateSchema,
+  coverageSchema,
   reviewStateSchema,
   sanitizedFindingSchema,
   type CandidateState,
+  type Coverage,
   type ReviewState,
   type SanitizedFinding,
 } from "@breach/contracts";
@@ -33,7 +36,9 @@ CREATE TABLE IF NOT EXISTS scans (
   scan_id TEXT PRIMARY KEY,
   repo_id BIGINT NOT NULL REFERENCES repository_candidates(repo_id),
   head_sha TEXT NOT NULL,
+  claim_token TEXT NOT NULL,
   coverage JSONB NOT NULL,
+  state TEXT NOT NULL DEFAULT 'SCANNING',
   started_at TIMESTAMPTZ NOT NULL,
   completed_at TIMESTAMPTZ,
   UNIQUE(repo_id, head_sha)
@@ -103,6 +108,28 @@ export interface MetadataStore {
     reviewState: Exclude<ReviewState, "UNREVIEWED">,
     reviewNote?: string,
   ): Promise<ReviewedFinding>;
+  transition(repoId: number, nextState: CandidateState): Promise<void>;
+  scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number): Promise<void>;
+  claimScan(repoId: number, headSha: string, startedAt: Date): Promise<boolean>;
+  saveFindings(findings: readonly SanitizedFinding[]): Promise<void>;
+  completeScan(
+    repoId: number,
+    headSha: string,
+    state: CandidateState,
+    coverage: Coverage,
+  ): Promise<void>;
+  recordMetric(
+    name: string,
+    value: number,
+    labels: Readonly<Record<string, string>>,
+  ): Promise<void>;
+  getScan(
+    repoId: number,
+    headSha: string,
+  ): Promise<{ state: CandidateState; coverage: Coverage } | null>;
+  getMetricSamples(
+    name: string,
+  ): Promise<Array<{ value: number; labels: Readonly<Record<string, string>> }>>;
 }
 
 const allowedTransitions: Readonly<Record<CandidateState, readonly CandidateState[]>> = {
@@ -301,6 +328,111 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
       });
 
       return reviewNote === undefined ? updated : { ...updated, reviewNote };
+    },
+
+    async transition(repoId, nextState) {
+      await store.transitionCandidate(repoId, nextState);
+    },
+
+    async scheduleCommitCheck(repoId, nextCheckAt, attempt) {
+      if (!Number.isInteger(attempt) || attempt < 0 || !Number.isFinite(nextCheckAt.getTime())) {
+        throw new Error("Invalid commit recheck schedule");
+      }
+      await pool.query(
+        `UPDATE repository_candidates
+         SET commit_check_attempts = $1, next_commit_check_at = $2
+         WHERE repo_id = $3`,
+        [attempt, nextCheckAt, repoId],
+      );
+    },
+
+    async claimScan(repoId, headSha, startedAt) {
+      if (!/^[a-f0-9]{40}$/iu.test(headSha) || !Number.isFinite(startedAt.getTime())) {
+        throw new Error("Invalid scan claim");
+      }
+      const claimToken = randomUUID();
+      await pool.query(
+        `INSERT INTO scans (scan_id, repo_id, head_sha, claim_token, coverage, state, started_at)
+         VALUES ($1, $2, $3, $4, $5, 'SCANNING', $6)
+         ON CONFLICT (repo_id, head_sha) DO NOTHING
+         RETURNING scan_id`,
+        [
+          `${String(repoId)}:${headSha}`,
+          repoId,
+          headSha,
+          claimToken,
+          JSON.stringify({}),
+          startedAt,
+        ],
+      );
+      const claimed = await pool.query<{ claim_token: string }>(
+        "SELECT claim_token FROM scans WHERE repo_id = $1 AND head_sha = $2",
+        [repoId, headSha],
+      );
+      return claimed.rows[0]?.claim_token === claimToken;
+    },
+
+    async saveFindings(findings) {
+      for (const finding of findings) await store.saveFinding(finding);
+    },
+
+    async completeScan(repoId, headSha, state, coverage) {
+      const safeState = candidateStateSchema.parse(state);
+      const safeCoverage = coverageSchema.parse(coverage);
+      await pool.query(
+        `UPDATE scans
+         SET coverage = $1, state = $2, completed_at = CURRENT_TIMESTAMP
+         WHERE repo_id = $3 AND head_sha = $4`,
+        [JSON.stringify(safeCoverage), safeState, repoId, headSha],
+      );
+    },
+
+    async recordMetric(name, value, labels) {
+      if (!/^[a-z][a-z0-9_.]*$/u.test(name) || !Number.isFinite(value)) {
+        throw new Error("Invalid metric sample");
+      }
+      const safeLabels = Object.fromEntries(
+        Object.entries(labels).map(([key, label]) => {
+          if (!/^[a-z][a-z0-9_]*$/u.test(key) || label.length > 80) {
+            throw new Error("Invalid metric labels");
+          }
+          return [key, label];
+        }),
+      );
+      await pool.query(
+        `INSERT INTO metric_samples (metric_name, measured_at, metric_value, labels)
+         VALUES ($1, CURRENT_TIMESTAMP, $2, $3)`,
+        [name, value, JSON.stringify(safeLabels)],
+      );
+    },
+
+    async getScan(repoId, headSha) {
+      const result = await pool.query<{ state: string; coverage: unknown }>(
+        "SELECT state, coverage FROM scans WHERE repo_id = $1 AND head_sha = $2",
+        [repoId, headSha],
+      );
+      const row = result.rows[0];
+      return row === undefined
+        ? null
+        : {
+            state: candidateStateSchema.parse(row.state),
+            coverage: coverageSchema.parse(row.coverage),
+          };
+    },
+
+    async getMetricSamples(name) {
+      const result = await pool.query<{ metric_value: number; labels: unknown }>(
+        `SELECT metric_value, labels FROM metric_samples
+         WHERE metric_name = $1 ORDER BY measured_at`,
+        [name],
+      );
+      return result.rows.map((row) => ({
+        value: row.metric_value,
+        labels:
+          typeof row.labels === "object" && row.labels !== null
+            ? (row.labels as Readonly<Record<string, string>>)
+            : {},
+      }));
     },
   };
 

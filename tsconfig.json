@@ -6,6 +6,7 @@
     { "path": "./packages/github" },
     { "path": "./packages/snapshot" },
     { "path": "./packages/analyzers" },
-    { "path": "./packages/dataflow" }
+    { "path": "./packages/dataflow" },
+    { "path": "./packages/orchestrator" }
   ]
 }

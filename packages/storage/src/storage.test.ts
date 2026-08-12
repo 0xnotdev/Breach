@@ -157,4 +157,45 @@ describe("metadata persistence seam", () => {
       store.reviewFinding(findingId, "FALSE_POSITIVE", "AWS_SECRET_ACCESS_KEY=CANARY_RAW"),
     ).rejects.toThrow("sensitive content");
   });
+
+  it("claims each committed HEAD once and records content-free scan telemetry", async () => {
+    await store.recordDiscoveryPage("public-repositories", 501, [
+      {
+        repoId: 501,
+        fullName: "fixture/lifecycle",
+        htmlUrl: "https://github.com/fixture/lifecycle",
+        discoveredAt: new Date("2026-08-12T12:00:00.000Z"),
+        priorityScore: 8,
+        candidateState: "WAITING_FOR_COMMIT",
+      },
+    ]);
+    const headSha = "d".repeat(40);
+    const startedAt = new Date("2026-08-12T12:01:00.000Z");
+    const coverage = {
+      ref: `HEAD@${headSha}`,
+      historyScanned: false as const,
+      scanComplete: true,
+      filesSeen: 2,
+      filesAnalyzed: 2,
+      bytesInspected: 42,
+      skippedBinary: 0,
+      skippedOversize: 0,
+      skippedBudget: 0,
+      treeTruncated: false,
+      languagesModeled: ["typescript" as const],
+    };
+
+    await expect(store.claimScan(501, headSha, startedAt)).resolves.toBe(true);
+    await expect(store.claimScan(501, headSha, startedAt)).resolves.toBe(false);
+    await store.completeScan(501, headSha, "SCANNED_NO_FINDINGS", coverage);
+    await store.recordMetric("scan.completed", 1, { status: "SCANNED_NO_FINDINGS" });
+
+    await expect(store.getScan(501, headSha)).resolves.toMatchObject({
+      state: "SCANNED_NO_FINDINGS",
+      coverage,
+    });
+    await expect(store.getMetricSamples("scan.completed")).resolves.toEqual([
+      { value: 1, labels: { status: "SCANNED_NO_FINDINGS" } },
+    ]);
+  });
 });

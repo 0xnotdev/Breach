@@ -14,7 +14,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP05 Secrets/dependencies | Complete | 4 analyzer behaviors across 13 formats; 26 total tests |
 | CP06 CI/Docker/IaC | Complete | 14 semantic rule results; 27 total tests |
 | CP07 Passive exploitability | Complete | 8 worked path behaviors; 35 total tests |
-| CP08 Orchestration/metrics | Pending | — |
+| CP08 Orchestration/metrics | Complete | 5 lifecycle + durable claim/metric behavior; 41 tests |
 | CP09 Operator interface | Pending | — |
 | CP10 Findings UI | Pending | — |
 | CP11 Investigation/review | Pending | — |
@@ -287,3 +287,38 @@ This ledger records material specification, TDD, verification, commit, and push 
 - Attack paths contain only semantic location/symbol/edge metadata; worked tests assert source expressions/snippets are absent from serialized results.
 - Every result hard-codes runtime verification, active testing, and deployment confirmation to false.
 - CP07 accepted and ready to commit/push.
+
+### 2026-08-12 19:16 IST — CP07 published / CP08 started
+
+- Committed CP07 as `b6df3f6` (`checkpoint 07: reconstruct passive attack paths`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `b6df3f6967ffbf6f1f65712985a4ec3cd98d4445`; worktree was clean.
+- Began CP08 with end-to-end worker lifecycle, idempotence, cleanup, partial/failure, and content-free metric behaviors.
+
+### 2026-08-12 19:18 IST — CP08 RED: scan lifecycle
+
+- Added five orchestration behaviors for a complete scan, empty-repository parking, at-most-once HEAD claims, analyzer failure cleanup, and partial coverage precedence.
+- Ran `npm test -- --run packages/orchestrator/src/orchestrator.test.ts`.
+- Expected failure observed: `packages/orchestrator/src/index.ts` did not exist.
+
+### 2026-08-12 19:20 IST — CP08 GREEN / RED: orchestration and durable claims
+
+- Implemented gate-to-scan orchestration, deterministic sanitized finding IDs, all analyzer composition, at-most-once claims, final-state precedence, aggregate metrics, and buffer release on success/failure.
+- Four of 5 orchestration tests passed initially. The remaining assertion incorrectly rejected `req.body.command`, which is explicitly permitted semantic source metadata; corrected it to reject the actual `router.post` source snippet. All 5 orchestration tests then passed.
+- Added a durable lifecycle slice to the storage seam for at-most-once HEAD claims and content-free scan/metric retrieval.
+- Expected red result observed: 5 storage behaviors passed and the new lifecycle behavior failed because `claimScan` did not exist.
+
+### 2026-08-12 19:22 IST — CP08 GREEN: durable lifecycle
+
+- Extended the metadata store with the orchestrator-compatible transition/scheduling/claim/bulk-findings/completion/metric interface.
+- The first claim implementation exposed a `pg-mem` row-count incompatibility: a conflict-free result still reported a positive row count. Replaced row-count reliance with a per-attempt random claim token and a subsequent exact-owner read; this remains atomic under PostgreSQL's unique `(repo_id, head_sha)` constraint.
+- All 6 storage behaviors passed, including duplicate-HEAD rejection and safe coverage/metric round trips.
+
+### 2026-08-12 19:24 IST — CP08 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 7 files, 41 tests.
+- `npm run build` passed for all eight workspaces.
+- Successful, waiting, duplicate, failed, and partial lifecycles are covered; every acquired snapshot is released on all terminal paths.
+- Metrics accept only bounded names, finite values, and short sanitized label values; errors/source content never enter labels.
+- CP08 accepted and ready to commit/push.
