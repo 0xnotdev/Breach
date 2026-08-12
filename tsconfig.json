@@ -5,6 +5,7 @@
     { "path": "./packages/storage" },
     { "path": "./packages/github" },
     { "path": "./packages/snapshot" },
-    { "path": "./packages/analyzers" }
+    { "path": "./packages/analyzers" },
+    { "path": "./packages/dataflow" }
   ]
 }

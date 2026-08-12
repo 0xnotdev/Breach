@@ -13,7 +13,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP04 Bounded inspection | Complete | 5 snapshot tests; 22 total tests; all gates passed |
 | CP05 Secrets/dependencies | Complete | 4 analyzer behaviors across 13 formats; 26 total tests |
 | CP06 CI/Docker/IaC | Complete | 14 semantic rule results; 27 total tests |
-| CP07 Passive exploitability | Pending | — |
+| CP07 Passive exploitability | Complete | 8 worked path behaviors; 35 total tests |
 | CP08 Orchestration/metrics | Pending | — |
 | CP09 Operator interface | Pending | — |
 | CP10 Findings UI | Pending | — |
@@ -251,3 +251,39 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm test` passed: 5 files, 27 tests.
 - `npm run build` passed for all six workspaces.
 - CP06 accepted and ready to commit/push.
+
+### 2026-08-12 19:06 IST — CP06 published / CP07 started
+
+- Committed CP06 as `c5f81dd` (`checkpoint 06: analyze CI Docker and IaC risk`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `c5f81dda20ead2e21ec89e4fb6cb4ea5c1cd86b7`; worktree was clean.
+- Began CP07 with worked Express and FastAPI source-to-sink paths plus negative/barrier cases.
+
+### 2026-08-12 19:08 IST — CP07 RED: passive attack paths
+
+- Added five behavior tests for cross-file Express command injection, cross-file FastAPI SSRF, sanitizer/auth downranking, parameterized SQL suppression, and disconnected-sink uncertainty.
+- Ran `npm test -- --run packages/dataflow/src/dataflow.test.ts`.
+- Expected failure observed: `packages/dataflow/src/index.ts` did not exist.
+
+### 2026-08-12 19:10 IST — CP07 GREEN / RED: core paths and framework expansion
+
+- Implemented bounded TypeScript syntax-tree parsing, indentation-aware Python function parsing, entry/source/call/sink models, taint propagation, aliases, sanitizer/auth evidence, parameterized-query suppression, bounded cross-file traversal, and score construction.
+- The original 5 worked behaviors passed on the first implementation run.
+- Added Next route, Flask decorator, additional sink-family, and graph-depth behaviors.
+- Seven of 8 tests passed; expected red result remained for Next/Flask entry modeling because the Next handler was treated as a disconnected primitive.
+
+### 2026-08-12 19:12 IST — CP07 GREEN: framework and bounds expansion
+
+- Added Next App Router `route.ts` entry modeling with dynamic path normalization and request parameters, plus Flask `@app.route(..., methods=[...])` modeling.
+- All 8 data-flow behaviors passed.
+- The engine now exercises command injection, SQL injection, SSRF, path traversal, dynamic code, unsafe deserialization, parameterized-query suppression, sanitizer/auth barriers, Express, Next, FastAPI, Flask, cross-file flow, all four confidence tiers, and graph-depth termination.
+- Full verification initially found one lint-only route-segment narrowing issue. Simplified the control-flow guard; lint then passed.
+
+### 2026-08-12 19:14 IST — CP07 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 6 files, 35 tests.
+- `npm run build` passed for all seven workspaces.
+- Attack paths contain only semantic location/symbol/edge metadata; worked tests assert source expressions/snippets are absent from serialized results.
+- Every result hard-codes runtime verification, active testing, and deployment confirmation to false.
+- CP07 accepted and ready to commit/push.
