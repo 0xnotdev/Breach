@@ -7,6 +7,7 @@
     { "path": "./packages/snapshot" },
     { "path": "./packages/analyzers" },
     { "path": "./packages/dataflow" },
-    { "path": "./packages/orchestrator" }
+    { "path": "./packages/orchestrator" },
+    { "path": "./packages/operator" }
   ]
 }

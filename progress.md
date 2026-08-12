@@ -15,7 +15,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP06 CI/Docker/IaC | Complete | 14 semantic rule results; 27 total tests |
 | CP07 Passive exploitability | Complete | 8 worked path behaviors; 35 total tests |
 | CP08 Orchestration/metrics | Complete | 5 lifecycle + durable claim/metric behavior; 41 tests |
-| CP09 Operator interface | Pending | — |
+| CP09 Operator interface | Complete | 5 HTTP/SSE behaviors; 46 total tests |
 | CP10 Findings UI | Pending | — |
 | CP11 Investigation/review | Pending | — |
 | CP12 Stream/System UI | Pending | — |
@@ -322,3 +322,31 @@ This ledger records material specification, TDD, verification, commit, and push 
 - Successful, waiting, duplicate, failed, and partial lifecycles are covered; every acquired snapshot is released on all terminal paths.
 - Metrics accept only bounded names, finite values, and short sanitized label values; errors/source content never enter labels.
 - CP08 accepted and ready to commit/push.
+
+### 2026-08-12 19:26 IST — CP08 published / CP09 started
+
+- Committed CP08 as `f3d9b9d` (`checkpoint 08: orchestrate safe scan lifecycle`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `f3d9b9ded9f86bb2a046bbddea59e559718d4671`; worktree was clean.
+- Began CP09 at the HTTP/SSE interface with authentication, filters, detail, review, metrics, and forbidden-data behaviors.
+
+### 2026-08-12 19:28 IST — CP09 RED: operator HTTP/SSE
+
+- Added five HTTP-level behaviors for authentication, ranking/filters, investigation/review, stream/system, and redacted errors.
+- Ran `npm test -- --run packages/operator/src/operator.test.ts`.
+- Expected failure observed: `packages/operator/src/index.ts` did not exist.
+
+### 2026-08-12 19:30 IST — CP09 GREEN: operator HTTP/SSE
+
+- Implemented constant-time bearer authentication, no-store/security response headers, all required finding filters, severity/exploitability/recency ranking, sanitized detail responses, revision-anchored GitHub links, review validation, state-event SSE, and system metrics.
+- Errors are fixed codes and never echo request values. Review notes reject likely assignments, private-key markers, long high-entropy spans, and oversized text.
+- All 5 interface behaviors passed.
+- First full verification found one lint issue in test header composition; replaced object spread with a `Headers` instance.
+
+### 2026-08-12 19:32 IST — CP09 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 8 files, 46 tests.
+- `npm run build` passed for all nine workspaces.
+- JSON/SSE tests verify forbidden raw values and source snippets are absent while allowed semantic source symbols remain available for investigation.
+- CP09 accepted and ready to commit/push.
