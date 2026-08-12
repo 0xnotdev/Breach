@@ -11,7 +11,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP02 Persistence/sanitization | Complete | 5 integration behaviors; 11 total tests; all gates passed |
 | CP03 Discovery/gate | Complete | 6 GitHub seam tests; 17 total tests; all gates passed |
 | CP04 Bounded inspection | Complete | 5 snapshot tests; 22 total tests; all gates passed |
-| CP05 Secrets/dependencies | Pending | — |
+| CP05 Secrets/dependencies | Complete | 4 analyzer behaviors across 13 formats; 26 total tests |
 | CP06 CI/Docker/IaC | Pending | — |
 | CP07 Passive exploitability | Pending | — |
 | CP08 Orchestration/metrics | Pending | — |
@@ -189,3 +189,40 @@ This ledger records material specification, TDD, verification, commit, and push 
 - Runtime source audit found no clone, archive, package-install, process-execution, or build command in the snapshot path; the only textual `exec(` match is `RegExp.exec` in Link parsing.
 - Forged permits produce zero requests; only a live process-issued gate permit can reach Trees/Blobs.
 - CP04 accepted and ready to commit/push.
+
+### 2026-08-12 18:48 IST — CP04 published / CP05 started
+
+- Committed CP04 as `f4c4119` (`checkpoint 04: bound ephemeral HEAD inspection`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `f4c411995d426f176e5f98f0e62f790d0aec133f`; worktree was clean.
+- Began CP05 using only fake non-functional credential fixtures and exact dependency literals.
+
+### 2026-08-12 18:50 IST — CP05 RED: secrets, manifests, and OSV
+
+- Added four behaviors covering raw-secret exclusion, deterministic fingerprints, placeholder/integrity suppression, eight representative ecosystems, unresolved-range rejection, malformed input, and 100-item OSV batches.
+- Ran `npm test -- --run packages/analyzers/src/analyzers.test.ts`.
+- Expected failure observed: `packages/analyzers/src/index.ts` did not exist.
+
+### 2026-08-12 18:52 IST — CP05 GREEN / RED: core analyzers and remaining formats
+
+- Implemented structured/contextual secret detection, placeholder/generated/integrity suppression, HMAC-only output, exact manifest parsing, and OSV batching/correlation.
+- Three syntax corrections were required before collection: numeric separators and unescaped Unicode-mode bracket literals in regex quantifiers/classes.
+- The original 4 behavior tests then passed.
+- Expanded the manifest acceptance table with Go sum, Cargo manifest, pyproject, pnpm, and Yarn lock fixtures.
+- Expected red result observed: the format table failed first at unsupported `go.sum`; the other 3 behaviors remained green.
+
+### 2026-08-12 18:54 IST — CP05 GREEN: complete prioritized formats
+
+- Added exact-version parsing for Go sums, Cargo manifests, and PEP 621/Poetry pyproject dependencies; pnpm and Yarn fixtures also passed the existing parsers.
+- The expanded format table passed across npm lock/manifest, pnpm, Yarn, requirements, Pipfile/Poetry/uv paths, Go mod/sum, Cargo manifest/lock, Gemfile lock, Maven/Gradle, Composer, and NuGet implementations.
+- Added an explicit generic high-entropy credential fixture; the result remains fingerprint-only and the raw fixture is absent from serialized output.
+- First full verification: all 26 tests passed, but lint found unnecessary `match.index` fallbacks and typecheck/build found string key length handling. Removed the unnecessary fallbacks and measured string keys as encoded bytes.
+
+### 2026-08-12 18:56 IST — CP05 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 5 files, 26 tests.
+- `npm run build` passed for all six workspaces.
+- OSV tests prove 205 exact packages produce batches of 100/100/5 and only advisory/package metadata returns.
+- No package manager, dependency installation, credential validation, or credential use occurs in the analyzer interface.
+- CP05 accepted and ready to commit/push.
