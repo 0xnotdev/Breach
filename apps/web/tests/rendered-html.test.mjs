@@ -44,3 +44,34 @@ test("removes every disposable starter artifact", async () => {
   await assert.rejects(access(new URL("public/globe.svg", templateRoot)));
   await assert.rejects(access(new URL("public/window.svg", templateRoot)));
 });
+
+test("renders semantic investigation evidence and review controls", async () => {
+  const response = await render("/findings/cmd-injection-a827f9c");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Investigation/);
+  assert.match(html, /ENTRY.*SOURCE.*FLOW.*SINK/s);
+  assert.match(html, /req\.body\.filename/);
+  assert.match(html, /child_process\.exec/);
+  assert.match(html, /Reasons surfaced/);
+  assert.match(html, /Observed barriers/);
+  assert.match(html, /Coverage &amp; limitations/);
+  assert.match(html, /Static evidence, not runtime confirmation/);
+  assert.match(html, /CONFIRMED/);
+  assert.match(html, /FALSE POSITIVE/);
+  assert.match(html, /UNCERTAIN/);
+  assert.match(html, /Open on GitHub/);
+  assert.match(html, /blob\/a827f9c\/src\/routes\/render\.ts#L42/);
+});
+
+test("renders secret details without retaining the raw value", async () => {
+  const response = await render("/findings/secret-52f7ab19");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /AWS Secret Access Key/);
+  assert.match(html, /\.env:8/);
+  assert.match(html, /Fingerprint/);
+  assert.match(html, /9ad3…17e2/);
+  assert.match(html, /Raw value NOT RETAINED/);
+  assert.doesNotMatch(html, /AKIA[0-9A-Z]{16}/);
+});

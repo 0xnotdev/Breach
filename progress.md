@@ -17,7 +17,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP08 Orchestration/metrics | Complete | 5 lifecycle + durable claim/metric behavior; 41 tests |
 | CP09 Operator interface | Complete | 5 HTTP/SSE behaviors; 46 total tests |
 | CP10 Findings UI | Complete | 2 server-render/artifact tests; all gates passed |
-| CP11 Investigation/review | Pending | — |
+| CP11 Investigation/review | Complete | 2 detail-route behaviors; 4 web tests; all gates passed |
 | CP12 Stream/System UI | Pending | — |
 | CP13 Hardening/canary | Pending | — |
 | CP14 Runnable product/ops | Pending | — |
@@ -379,3 +379,31 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm run build` passed for the web application and all eight library workspaces.
 - `npm test` in `apps/web` passed both server-render and starter-removal behaviors.
 - CP10 accepted and ready to commit/push.
+
+### 2026-08-12 19:44 IST — CP10 published / CP11 started
+
+- Committed CP10 as `3665401` (`checkpoint 10: build findings operator console`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `3665401ec231b3cc804df0db03535f0c7bad4339`; the worktree was clean.
+- Began CP11 with server-render contracts for exploitability investigation and secret-safe detail routes.
+
+### 2026-08-12 19:46 IST — CP11 RED: investigation and review
+
+- Added route-level behaviors for semantic entry/source/flow/sink evidence, reasons, barriers, coverage/limitations, static-evidence labeling, three-state review controls, revision-anchored GitHub navigation, and secret-safe details.
+- Ran the web test command. The existing two behaviors passed; both new detail-route behaviors failed with the expected HTTP 404 because no investigation route existed.
+
+### 2026-08-12 19:49 IST — CP11 GREEN: investigation and review
+
+- Added a dedicated dynamic investigation route with repository/revision identity, severity, static-evidence boundary, semantic attack-path nodes, reasons surfaced, observed barriers, coverage, and limitations.
+- Added a redacted secret investigation mode exposing only type, location, confidence, truncated HMAC fingerprint, and `Raw value NOT RETAINED`.
+- Added revision/path/line-anchored GitHub links using system-owned finding metadata.
+- Added the three review decisions, local state feedback, validation-metric confirmation, bounded notes, and rejection of assignments, private-key markers, provider key shapes, and long encoded spans.
+- All four web behaviors passed.
+
+### 2026-08-12 19:51 IST — CP11 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 8 files, 46 domain/service tests.
+- `npm run build` passed for the web application and all eight library workspaces.
+- `npm test` in `apps/web` passed all four server-render and artifact behaviors.
+- CP11 accepted and ready to commit/push.
