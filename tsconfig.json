@@ -8,6 +8,7 @@
     { "path": "./packages/analyzers" },
     { "path": "./packages/dataflow" },
     { "path": "./packages/orchestrator" },
-    { "path": "./packages/operator" }
+    { "path": "./packages/operator" },
+    { "path": "./packages/security" }
   ]
 }

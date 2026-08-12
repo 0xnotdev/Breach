@@ -19,7 +19,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP10 Findings UI | Complete | 2 server-render/artifact tests; all gates passed |
 | CP11 Investigation/review | Complete | 2 detail-route behaviors; 4 web tests; all gates passed |
 | CP12 Stream/System UI | Complete | 6 render + 2 browser behaviors; all gates passed |
-| CP13 Hardening/canary | Pending | — |
+| CP13 Hardening/canary | Complete | 7 security behaviors; Compose valid; all gates passed |
 | CP14 Runnable product/ops | Pending | — |
 | CP15 Final verification | Pending | — |
 
@@ -448,3 +448,42 @@ This ledger records material specification, TDD, verification, commit, and push 
 - Web server-render tests passed: 6 of 6.
 - Chromium browser journeys passed: 2 of 2.
 - CP12 accepted and ready to commit/push.
+
+### 2026-08-12 20:09 IST — CP12 published / CP13 started
+
+- Committed CP12 as `12b2cf9` (`checkpoint 12: complete stream and system console`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `12b2cf995080022bf211f5f146d7ef437ca62525`; the worktree was clean.
+- Began CP13 with security-boundary tests for egress allowlisting, safe bounded YAML/XML parsing, control/Unicode handling, and whole-surface fake-canary retention proof.
+
+### 2026-08-12 20:11 IST — CP13 RED: security boundary
+
+- Added five behaviors plus a controlled, nonfunctional canary repository fixture.
+- Ran the targeted suite. Collection failed with the expected missing `packages/security/src/index.ts`; no hardening implementation existed.
+
+### 2026-08-12 20:13 IST — CP13 GREEN iteration: bounded security primitives
+
+- Implemented exact GitHub API/OSV/internal-service egress allowlisting with protocol, hostname, and userinfo checks; repository-controlled GitHub/web/file URLs are denied.
+- Implemented byte/depth/control-bounded YAML and XML parsing, denying YAML aliases/custom tags and all XML DTD/entity/system/public declarations.
+- Implemented NFC normalization, visible terminal/control escaping, bounded display text, and a multi-surface canary auditor requiring zero raw occurrences and exactly one full HMAC fingerprint.
+- Four of five behaviors passed. The canary assertion incorrectly split its Base64-like value on every `=` and omitted padding; corrected fixture extraction to slice after the first assignment delimiter.
+
+### 2026-08-12 20:15 IST — CP13 RED: container boundary
+
+- Added explicit credential non-verification and hardened-container contract behaviors.
+- Six of seven security behaviors passed. The container behavior failed with the expected missing `compose.yaml` before any deployment declaration existed.
+
+### 2026-08-12 20:17 IST — CP13 GREEN: hardened worker declaration
+
+- Added a non-root multi-stage worker image, source/canary-excluding build context, read-only runtime, 64 MiB noexec/nosuid tmpfs, all-capability drop, no-new-privileges, init, core dump/file descriptor/process/CPU/memory limits, internal metadata network, and separate egress network.
+- All seven security behaviors passed.
+- Docker Compose validation then caught a portability conflict between service-level `pids_limit` and the deployment resource block. Moved the process cap into `deploy.resources.limits.pids` so all resource limits share one valid declaration and updated the contract accordingly.
+
+### 2026-08-12 20:20 IST — CP13 verification
+
+- Added the operational security-boundary document, including the production network-policy mirror requirement, host swap/encryption requirement, crash/heap dump prohibition, parser policy, and canary proof contract.
+- `docker compose config --quiet` passed with controlled validation-only environment values.
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 9 files, 53 tests.
+- `npm run build` passed for the web application and all nine library workspaces.
+- CP13 accepted and ready to commit/push.
