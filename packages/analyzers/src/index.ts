@@ -527,3 +527,224 @@ export async function correlateOsv(
   }
   return findings;
 }
+
+export interface ConfigurationFindingDraft {
+  category: "configuration";
+  ruleId: string;
+  severity: "critical" | "high" | "medium";
+  path: string;
+  line: number;
+}
+
+function findLine(lines: readonly string[], predicate: (line: string) => boolean): number {
+  const index = lines.findIndex(predicate);
+  return index < 0 ? 1 : index + 1;
+}
+
+function addConfigurationFinding(
+  findings: ConfigurationFindingDraft[],
+  path: string,
+  ruleId: string,
+  severity: ConfigurationFindingDraft["severity"],
+  line: number,
+): void {
+  findings.push({ category: "configuration", ruleId, severity, path, line });
+}
+
+function scanWorkflow(
+  path: string,
+  text: string,
+  lines: readonly string[],
+  findings: ConfigurationFindingDraft[],
+): void {
+  const pullTargetLine = findLine(lines, (line) => /(?:^|:)\s*pull_request_target\s*:?\s*$/u.test(line));
+  if (/\bpull_request_target\b/u.test(text)) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "github_actions.pull_request_target",
+      "high",
+      pullTargetLine,
+    );
+  }
+  const writeAllLine = findLine(lines, (line) => /^\s*permissions\s*:\s*write-all\s*$/u.test(line));
+  if (lines.some((line) => /^\s*permissions\s*:\s*write-all\s*$/u.test(line))) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "github_actions.write_all_permissions",
+      "high",
+      writeAllLine,
+    );
+  }
+  const unpinnedLine = findLine(lines, (line) => {
+    const match = /\buses\s*:\s*([^\s@]+)@([^\s#]+)/u.exec(line);
+    return match !== null && !/^[a-f0-9]{40}$/iu.test(match[2] ?? "");
+  });
+  if (
+    lines.some((line) => {
+      const match = /\buses\s*:\s*([^\s@]+)@([^\s#]+)/u.exec(line);
+      return match !== null && !/^[a-f0-9]{40}$/iu.test(match[2] ?? "");
+    })
+  ) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "github_actions.unpinned_action",
+      "medium",
+      unpinnedLine,
+    );
+  }
+  const secretShellLine = findLine(
+    lines,
+    (line) => /\brun\s*:/u.test(line) && /\$\{\{\s*secrets\./u.test(line),
+  );
+  if (lines.some((line) => /\brun\s*:/u.test(line) && /\$\{\{\s*secrets\./u.test(line))) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "github_actions.secret_in_shell",
+      "high",
+      secretShellLine,
+    );
+  }
+}
+
+function scanDocker(
+  path: string,
+  lines: readonly string[],
+  findings: ConfigurationFindingDraft[],
+): void {
+  const secretLine = findLine(
+    lines,
+    (line) => /^\s*(?:ARG|ENV)\s+[^\s=]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)/iu.test(line),
+  );
+  if (
+    lines.some((line) =>
+      /^\s*(?:ARG|ENV)\s+[^\s=]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)/iu.test(line),
+    )
+  ) {
+    addConfigurationFinding(findings, path, "docker.secret_in_arg_env", "high", secretLine);
+  }
+  const pipeShellLine = findLine(
+    lines,
+    (line) => /^\s*RUN\b/iu.test(line) && /\b(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash)\b/iu.test(line),
+  );
+  if (
+    lines.some(
+      (line) => /^\s*RUN\b/iu.test(line) && /\b(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash)\b/iu.test(line),
+    )
+  ) {
+    addConfigurationFinding(findings, path, "docker.download_pipe_shell", "high", pipeShellLine);
+  }
+  const writableLine = findLine(lines, (line) => /^\s*RUN\b[\s\S]*\bchmod\s+(?:-R\s+)?777\b/iu.test(line));
+  if (lines.some((line) => /^\s*RUN\b[\s\S]*\bchmod\s+(?:-R\s+)?777\b/iu.test(line))) {
+    addConfigurationFinding(findings, path, "docker.world_writable", "medium", writableLine);
+  }
+  const users = lines.filter((line) => /^\s*USER\s+/iu.test(line));
+  if (users.length === 0 || users.some((line) => /^\s*USER\s+(?:0|root)\s*$/iu.test(line))) {
+    const rootLine = users.length === 0 ? 1 : findLine(lines, (line) => /^\s*USER\s+(?:0|root)\s*$/iu.test(line));
+    addConfigurationFinding(findings, path, "docker.root_user", "medium", rootLine);
+  }
+}
+
+function scanTerraform(
+  path: string,
+  text: string,
+  lines: readonly string[],
+  findings: ConfigurationFindingDraft[],
+): void {
+  const publicNetwork = /(?:0\.0\.0\.0\/0|::\/0)/u.test(text);
+  const sensitivePort = /(?:from_port|to_port)\s*=\s*(?:22|3306|5432|6379|9200|27017)\b/u.test(text);
+  if (publicNetwork && sensitivePort) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "terraform.public_sensitive_ingress",
+      "critical",
+      findLine(lines, (line) => /(?:0\.0\.0\.0\/0|::\/0)/u.test(line)),
+    );
+  }
+  if (/\bacl\s*=\s*"public-(?:read|read-write)"/u.test(text) || /public_access\s*=\s*true/u.test(text)) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "terraform.public_storage",
+      "high",
+      findLine(lines, (line) => /public-(?:read|read-write)|public_access\s*=\s*true/u.test(line)),
+    );
+  }
+}
+
+function scanKubernetes(
+  path: string,
+  lines: readonly string[],
+  findings: ConfigurationFindingDraft[],
+): void {
+  const privilegedLine = findLine(lines, (line) => /^\s*privileged\s*:\s*true\s*$/iu.test(line));
+  if (lines.some((line) => /^\s*privileged\s*:\s*true\s*$/iu.test(line))) {
+    addConfigurationFinding(findings, path, "kubernetes.privileged_container", "critical", privilegedLine);
+  }
+  const escalationLine = findLine(
+    lines,
+    (line) => /^\s*allowPrivilegeEscalation\s*:\s*true\s*$/iu.test(line),
+  );
+  if (lines.some((line) => /^\s*allowPrivilegeEscalation\s*:\s*true\s*$/iu.test(line))) {
+    addConfigurationFinding(findings, path, "kubernetes.privilege_escalation", "high", escalationLine);
+  }
+}
+
+function scanTlsAndCors(
+  path: string,
+  text: string,
+  lines: readonly string[],
+  findings: ConfigurationFindingDraft[],
+): void {
+  if (/rejectUnauthorized\s*:\s*false|verify\s*=\s*false|CERT_NONE/u.test(text)) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "tls.verification_disabled",
+      "high",
+      findLine(lines, (line) => /rejectUnauthorized\s*:\s*false|verify\s*=\s*false|CERT_NONE/u.test(line)),
+    );
+  }
+  const wildcardOrigin = /origin\s*:\s*["']\*["']/u.test(text);
+  const credentials = /credentials\s*:\s*true/u.test(text);
+  if (wildcardOrigin && credentials) {
+    addConfigurationFinding(
+      findings,
+      path,
+      "cors.wildcard_credentials",
+      "high",
+      findLine(lines, (line) => /origin\s*:\s*["']\*["']/u.test(line)),
+    );
+  }
+}
+
+export function scanConfiguration(files: readonly AnalyzerFile[]): ConfigurationFindingDraft[] {
+  const findings: ConfigurationFindingDraft[] = [];
+  for (const file of files) {
+    const lower = file.path.toLocaleLowerCase("en-US");
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(file.bytes);
+    const lines = text.split(/\r?\n/u);
+    if (/^\.github\/workflows\/[^/]+\.ya?ml$/u.test(lower)) {
+      scanWorkflow(file.path, text, lines, findings);
+    }
+    if (/(?:^|\/)dockerfile(?:\.[^/]*)?$/u.test(lower)) {
+      scanDocker(file.path, lines, findings);
+    }
+    if (lower.endsWith(".tf") || lower.endsWith(".tfvars")) {
+      scanTerraform(file.path, text, lines, findings);
+    }
+    if (
+      /(?:^|\/)(?:deployment[^/]*|statefulset[^/]*|daemonset[^/]*|pod[^/]*|kustomization|values)\.ya?ml$/u.test(lower) ||
+      lower.includes("k8s/") ||
+      lower.includes("kubernetes/")
+    ) {
+      scanKubernetes(file.path, lines, findings);
+    }
+    scanTlsAndCors(file.path, text, lines, findings);
+  }
+  return findings;
+}

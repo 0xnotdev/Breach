@@ -12,7 +12,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP03 Discovery/gate | Complete | 6 GitHub seam tests; 17 total tests; all gates passed |
 | CP04 Bounded inspection | Complete | 5 snapshot tests; 22 total tests; all gates passed |
 | CP05 Secrets/dependencies | Complete | 4 analyzer behaviors across 13 formats; 26 total tests |
-| CP06 CI/Docker/IaC | Pending | — |
+| CP06 CI/Docker/IaC | Complete | 14 semantic rule results; 27 total tests |
 | CP07 Passive exploitability | Pending | — |
 | CP08 Orchestration/metrics | Pending | — |
 | CP09 Operator interface | Pending | — |
@@ -226,3 +226,28 @@ This ledger records material specification, TDD, verification, commit, and push 
 - OSV tests prove 205 exact packages produce batches of 100/100/5 and only advisory/package metadata returns.
 - No package manager, dependency installation, credential validation, or credential use occurs in the analyzer interface.
 - CP05 accepted and ready to commit/push.
+
+### 2026-08-12 18:58 IST — CP05 published / CP06 started
+
+- Committed CP05 as `9cf2ba8` (`checkpoint 05: detect secrets and vulnerable dependencies`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `9cf2ba8b667d8e54a106777d56d712a0bf551cd1`; worktree was clean.
+- Began CP06 with controlled CI, Docker, Terraform, Kubernetes, TLS, and CORS fixtures.
+
+### 2026-08-12 19:00 IST — CP06 RED: configuration semantics
+
+- Added a behavior fixture spanning GitHub Actions, Docker, Terraform, Kubernetes, TLS, and credentialed CORS.
+- Ran the analyzer suite; 4 existing behaviors passed and the new configuration behavior failed because `scanConfiguration` was not implemented.
+
+### 2026-08-12 19:02 IST — CP06 GREEN: configuration semantics
+
+- Implemented location-only semantic rules for risky `pull_request_target`, write-all workflow permissions, unpinned Actions, secrets interpolated into shell steps, Docker credential ARG/ENV, downloaded scripts piped to shells, world-writable modes, and root execution.
+- Implemented public sensitive Terraform ingress/public storage rules, privileged Kubernetes/privilege escalation rules, disabled TLS verification, and wildcard credentialed CORS.
+- The controlled fixture emitted the expected 14 ordered rule/location records and no snippet, repository string, secret name, or arbitrary URL.
+
+### 2026-08-12 19:04 IST — CP06 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 5 files, 27 tests.
+- `npm run build` passed for all six workspaces.
+- CP06 accepted and ready to commit/push.

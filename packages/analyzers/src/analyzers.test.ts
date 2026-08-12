@@ -3,6 +3,7 @@ import {
   SecretScanner,
   correlateOsv,
   parseDependencies,
+  scanConfiguration,
   type OsvBatchRequest,
   type OsvBatchResponse,
   type OsvTransport,
@@ -164,5 +165,67 @@ describe("passive secret and dependency analysis", () => {
       },
     ]);
     expect(JSON.stringify(calls)).not.toContain("source");
+  });
+
+  it("surfaces high-risk CI, Docker, IaC, and configuration semantics without snippets", () => {
+    const findings = scanConfiguration([
+      {
+        path: ".github/workflows/release.yml",
+        bytes: bytes(
+          "on: pull_request_target\n" +
+            "permissions: write-all\n" +
+            "steps:\n" +
+            "  - uses: actions/checkout@main\n" +
+            "  - run: echo ${{ secrets.DEPLOY_KEY }}\n",
+        ),
+      },
+      {
+        path: "Dockerfile",
+        bytes: bytes(
+          "FROM node:24\n" +
+            "ARG API_TOKEN\n" +
+            "RUN curl https://example.invalid/install.sh | sh\n" +
+            "RUN chmod 777 /app\n",
+        ),
+      },
+      {
+        path: "infra/main.tf",
+        bytes: bytes(
+          'from_port = 22\nto_port = 22\ncidr_blocks = ["0.0.0.0/0"]\nacl = "public-read"\n',
+        ),
+      },
+      {
+        path: "k8s/deployment.yaml",
+        bytes: bytes("securityContext:\n  privileged: true\n  allowPrivilegeEscalation: true\n"),
+      },
+      {
+        path: "src/config.ts",
+        bytes: bytes(
+          "const tls = { rejectUnauthorized: false };\n" +
+            "const cors = { origin: '*', credentials: true };\n",
+        ),
+      },
+    ]);
+
+    expect(findings.map((finding) => finding.ruleId)).toEqual([
+      "github_actions.pull_request_target",
+      "github_actions.write_all_permissions",
+      "github_actions.unpinned_action",
+      "github_actions.secret_in_shell",
+      "docker.secret_in_arg_env",
+      "docker.download_pipe_shell",
+      "docker.world_writable",
+      "docker.root_user",
+      "terraform.public_sensitive_ingress",
+      "terraform.public_storage",
+      "kubernetes.privileged_container",
+      "kubernetes.privilege_escalation",
+      "tls.verification_disabled",
+      "cors.wildcard_credentials",
+    ]);
+    const serialized = JSON.stringify(findings);
+    expect(serialized).not.toContain("DEPLOY_KEY");
+    expect(serialized).not.toContain("example.invalid");
+    expect(findings.every((finding) => !("snippet" in finding))).toBe(true);
   });
 });
