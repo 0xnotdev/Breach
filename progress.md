@@ -644,3 +644,9 @@ This ledger records material specification, TDD, verification, commit, and push 
 - Committed CP15 as `e5716cc` (`checkpoint 15: verify and deliver complete build`) and pushed it to `origin/main`.
 - Fetched the remote and independently checked the local commit, remote-tracking commit, and `git ls-remote` result; all three resolved to `e5716ccc0e4bcb537662e7e86b19e3ae2a15b02c`.
 - This closing ledger entry is the only change after the verified checkpoint and will be committed/pushed as the final documentation closure.
+
+### 2026-08-12 21:38 IST — GitHub validation GREEN
+
+- GitHub Actions run `31584986581` completed successfully for the final ledger commit.
+- The independent Ubuntu job passed pinned checkout/setup, clean npm install, lint, strict typecheck, enforced coverage, all production builds, real PostgreSQL migration, 6 server-render behaviors, 2 Chromium journeys, production dependency audit, tracked-secret audit, Compose validation, and cleanup.
+- This is the final external acceptance gate. The evidence entry is being published as a documentation-only `[skip ci]` closure so it does not create an infinite validation/ledger cycle.
