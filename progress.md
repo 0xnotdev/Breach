@@ -638,3 +638,9 @@ This ledger records material specification, TDD, verification, commit, and push 
 - Scanned tracked project sources for unresolved task markers and focused/skipped required tests; no unexplained TODO/FIXME, `.only`, or skipped test was found.
 - `git diff --check` passed and no unmerged path exists.
 - CP00–CP15 are complete. Final publication and local/remote/worktree equality evidence will be appended by the publication commit.
+
+### 2026-08-12 21:36 IST — CP15 published
+
+- Committed CP15 as `e5716cc` (`checkpoint 15: verify and deliver complete build`) and pushed it to `origin/main`.
+- Fetched the remote and independently checked the local commit, remote-tracking commit, and `git ls-remote` result; all three resolved to `e5716ccc0e4bcb537662e7e86b19e3ae2a15b02c`.
+- This closing ledger entry is the only change after the verified checkpoint and will be committed/pushed as the final documentation closure.
