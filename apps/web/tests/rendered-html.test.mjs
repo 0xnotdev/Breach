@@ -75,3 +75,23 @@ test("renders secret details without retaining the raw value", async () => {
   assert.match(html, /Raw value NOT RETAINED/);
   assert.doesNotMatch(html, /AKIA[0-9A-Z]{16}/);
 });
+
+test("renders every sanitized public scan state in the live stream", async () => {
+  const response = await render("/stream");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  for (const state of ["DISCOVERED", "SKIPPED", "WAITING_FOR_COMMIT", "READY", "SCANNING", "SCANNED_NO_FINDINGS", "SCANNED_FINDINGS", "PARTIAL", "FAILED", "RATE_LIMITED"]) assert.match(html, new RegExp(state));
+  assert.match(html, /Live state transitions/);
+  assert.match(html, /Metadata only/i);
+  assert.doesNotMatch(html, /raw_(?:body|content|secret)|source_code/i);
+});
+
+test("renders complete system validation and safety metrics", async () => {
+  const response = await render("/system");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  for (const metric of ["Throughput", "Selection funnel", "GitHub quota", "Request cost", "Scan latency", "Reviewed precision", "Partial / failed", "Canary retention"]) assert.match(html, new RegExp(metric));
+  assert.match(html, /DEGRADED/);
+  assert.match(html, /SAFE/);
+  assert.match(html, /0 retention violations/);
+});

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo, useState } from "react";
 import { demoFindings } from "../data";
 
@@ -23,11 +22,11 @@ export function FindingsConsole() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <Link className="brand" href="/" aria-label="Breach findings home"><span className="brand-mark" aria-hidden="true">B</span><span><strong>Breach</strong><small>passive analysis</small></span></Link>
+        <a className="brand" href="/" aria-label="Breach findings home"><span className="brand-mark" aria-hidden="true">B</span><span><strong>Breach</strong><small>passive analysis</small></span></a>
         <nav aria-label="Primary navigation">
-          <Link className="nav-link active" href="/" aria-current="page"><span>01</span>Findings</Link>
-          <Link className="nav-link" href="/stream"><span>02</span>Stream</Link>
-          <Link className="nav-link" href="/system"><span>03</span>System</Link>
+          <a className="nav-link active" href="/" aria-current="page"><span>01</span>Findings</a>
+          <a className="nav-link" href="/stream"><span>02</span>Stream</a>
+          <a className="nav-link" href="/system"><span>03</span>System</a>
         </nav>
         <div className="sidebar-note"><span className="status-dot" aria-hidden="true" /><div><strong>Collector online</strong><small>Last event 2s ago</small></div></div>
         <p className="build-tag">VALIDATION MVP · HEAD ONLY</p>
@@ -47,13 +46,13 @@ export function FindingsConsole() {
         <div className="table-head" aria-hidden="true"><span>Finding / repository</span><span>Evidence</span><span>Score</span><span>Detected</span></div>
         <section className="finding-list" aria-label={`${String(visible.length)} findings`}>
           {visible.map((finding, index) => (
-            <Link className="finding-row" href={`/findings/${finding.id}`} key={finding.id}>
+            <a className="finding-row" href={`/findings/${finding.id}`} key={finding.id}>
               <span className="row-index">{String(index + 1).padStart(2, "0")}</span>
               <span className="finding-identity"><span className={`severity severity-${finding.severity.toLocaleLowerCase("en-US")}`}>{finding.severity}</span><strong>{finding.title}</strong><small>{finding.repository} · {finding.language}</small></span>
               <span className="finding-evidence"><strong>{finding.entry}</strong><small>{finding.flow}</small></span>
               <span className="finding-score"><strong>{finding.score}<span>/100</span></strong><small>{finding.scoreLabel}</small></span>
               <span className="finding-time"><strong>{finding.detected}</strong><small>{finding.review}</small></span><span className="row-arrow" aria-hidden="true">↗</span>
-            </Link>
+            </a>
           ))}
           {visible.length === 0 && <div className="empty-state" role="status"><strong>No surfaced finding within modeled coverage</strong><p>Adjust the filters. This does not mean the repository is secure.</p></div>}
         </section>

@@ -18,7 +18,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP09 Operator interface | Complete | 5 HTTP/SSE behaviors; 46 total tests |
 | CP10 Findings UI | Complete | 2 server-render/artifact tests; all gates passed |
 | CP11 Investigation/review | Complete | 2 detail-route behaviors; 4 web tests; all gates passed |
-| CP12 Stream/System UI | Pending | — |
+| CP12 Stream/System UI | Complete | 6 render + 2 browser behaviors; all gates passed |
 | CP13 Hardening/canary | Pending | — |
 | CP14 Runnable product/ops | Pending | — |
 | CP15 Final verification | Pending | — |
@@ -407,3 +407,44 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm run build` passed for the web application and all eight library workspaces.
 - `npm test` in `apps/web` passed all four server-render and artifact behaviors.
 - CP11 accepted and ready to commit/push.
+
+### 2026-08-12 19:53 IST — CP11 published / CP12 started
+
+- Committed CP11 as `0234400` (`checkpoint 11: add investigation and review`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `0234400eefcd860f8e9e1ddf270cd927afe5626d`; the worktree was clean.
+- Began CP12 with route-level acceptance contracts for the complete public scan-state vocabulary and required system validation/safety metrics.
+
+### 2026-08-12 19:55 IST — CP12 RED: Stream and System
+
+- Added server-render behaviors requiring all ten sanitized scan states plus throughput, funnel, quota, cost, latency, precision, partial/failure, canary, degraded, and safe indicators.
+- Ran the web test command. Four existing behaviors passed; Stream and System failed with the expected HTTP 404 because neither route existed.
+
+### 2026-08-12 19:58 IST — CP12 GREEN routes / RED browser journeys
+
+- Implemented the live Stream with all public lifecycle states, sanitized detail fields, an `aria-live` update pulse, and a metadata-only contract.
+- Implemented System with required metrics, selection funnel, explicit `DEGRADED` latency, `SAFE` safety status, and zero-retention/canary evidence.
+- Five of six server-render behaviors passed on the first run. The remaining test used case-sensitive `Metadata only` against the intentional uppercase boundary label; corrected the assertion to verify semantics without presentation casing.
+- Added browser journeys for filtering/empty state, investigation comprehension, rejected unsafe review notes, successful review, Stream navigation, and System safety health.
+- Expected browser red observed: `@playwright/test` was not yet installed.
+
+### 2026-08-12 20:02 IST — CP12 browser integration diagnosis
+
+- Installed the pinned Playwright test runner and Chromium, then ran both journeys against a production build/server.
+- The first run found that vinext client interception left navigation on the originating page. Replaced internal framework links with standards-native anchors, preserving accessible names and making route changes reliable without JavaScript navigation support.
+- The second run reached every route and exposed a real review-validation gap: `AWS_SECRET_ACCESS_KEY=...` was not rejected because characters followed the word `SECRET`. Broadened assignment-key detection to cover compound credential identifiers.
+- Also scoped the `DEGRADED` browser assertion to the overall health summary because both the summary and latency card intentionally expose that status.
+
+### 2026-08-12 20:05 IST — CP12 GREEN: browser journeys
+
+- Both Chromium journeys passed against the built production server: Findings filtering/empty state, Investigation navigation, unsafe-note rejection, successful review, Stream navigation/state comprehension, and System degraded/safety comprehension.
+- Added `test:browser` as a repeatable workspace command and pinned the browser-test dependency in the lockfile.
+
+### 2026-08-12 20:07 IST — CP12 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 8 files, 46 domain/service tests.
+- `npm run build` passed for the web application and all eight library workspaces.
+- Web server-render tests passed: 6 of 6.
+- Chromium browser journeys passed: 2 of 2.
+- CP12 accepted and ready to commit/push.

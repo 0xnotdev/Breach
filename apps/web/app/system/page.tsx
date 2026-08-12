@@ -1,0 +1,11 @@
+import { OperatorShell } from "../ui/OperatorShell";
+
+const metrics = [
+  ["Throughput", "694 repos/hr", "healthy", "Target ≥ 500"], ["Selection funnel", "6.7%", "healthy", "46 / 688 selected"], ["GitHub quota", "71% remaining", "healthy", "Reset in 34m"], ["Request cost", "4.8 / scan", "healthy", "Budget ≤ 6"], ["Scan latency", "p95 48s", "degraded", "Target ≤ 45s"], ["Reviewed precision", "82%", "healthy", "28 human labels"], ["Partial / failed", "2.1% / 0.4%", "healthy", "Last 60m"], ["Canary retention", "0 retention violations", "safe", "Exactly 1 fingerprint"],
+] as const;
+
+export default function SystemPage() {
+  return <OperatorShell active="System" status="Safety boundary intact" statusDetail="Canary passed 4m ago"><main className="workspace"><header className="topbar"><div><p className="eyebrow">VALIDATION CONTROL PLANE</p><h1>System</h1><p className="subtitle">Operational performance and safety invariants for the passive scanner.</p></div><div className="safe-pill">SAFE</div></header><section className="health-summary"><div><small>OVERALL</small><strong>DEGRADED</strong><p>Scan latency exceeds its p95 target. Safety controls remain healthy.</p></div><div className="health-bar" aria-label="Seven healthy indicators and one degraded indicator"><span /><span /><span /><span /><span className="degraded" /><span /><span /><span /></div></section><section className="system-grid" aria-label="System validation metrics">{metrics.map(([name, value, tone, detail]) => <article className={`system-card system-${tone}`} key={name}><small>{name}</small><strong>{value}</strong><p>{detail}</p><span>{tone.toLocaleUpperCase("en-US")}</span></article>)}</section><section className="funnel-panel"><h2>Selection funnel · last hour</h2><div><Funnel label="Discovered" value="10,284" width="100%" /><Funnel label="Eligible" value="688" width="68%" /><Funnel label="Selected" value="46" width="42%" /><Funnel label="Scanned" value="41" width="36%" /><Funnel label="Findings" value="12" width="20%" /></div></section></main></OperatorShell>;
+}
+
+function Funnel({ label, value, width }: { label: string; value: string; width: string }) { return <div className="funnel-row"><span>{label}</span><div><i style={{ width }} /></div><strong>{value}</strong></div>; }
