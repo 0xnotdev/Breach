@@ -52,6 +52,7 @@ export const coverageSchema = z
     bytesInspected: z.number().int().nonnegative(),
     skippedBinary: z.number().int().nonnegative(),
     skippedOversize: z.number().int().nonnegative(),
+    skippedBudget: z.number().int().nonnegative().default(0),
     treeTruncated: z.boolean(),
     languagesModeled: z.array(z.enum(["javascript", "typescript", "python"])),
   })

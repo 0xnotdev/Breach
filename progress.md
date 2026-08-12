@@ -10,7 +10,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP01 Workspace/domain | Complete | 6 contract tests; lint/typecheck/test/build passed |
 | CP02 Persistence/sanitization | Complete | 5 integration behaviors; 11 total tests; all gates passed |
 | CP03 Discovery/gate | Complete | 6 GitHub seam tests; 17 total tests; all gates passed |
-| CP04 Bounded inspection | Pending | — |
+| CP04 Bounded inspection | Complete | 5 snapshot tests; 22 total tests; all gates passed |
 | CP05 Secrets/dependencies | Pending | — |
 | CP06 CI/Docker/IaC | Pending | — |
 | CP07 Passive exploitability | Pending | — |
@@ -153,3 +153,39 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm run build` passed for web, contracts, GitHub, and storage workspaces.
 - Gate tests prove every non-ready outcome performs exactly one commit request and no content request.
 - CP03 accepted and ready to commit/push.
+
+### 2026-08-12 18:38 IST — CP03 published / CP04 started
+
+- Committed CP03 as `dc4416c` (`checkpoint 03: gate GitHub content access`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `dc4416c977d76f9c476541f44275a8904f1cbe2b`; worktree was clean.
+- Began CP04 with tests for unforgeable gate permits, high-value tree classification, streamed blob budgets, honest coverage, and explicit buffer release.
+
+### 2026-08-12 18:40 IST — CP04 RED: bounded committed-HEAD snapshot
+
+- Added four behavior tests covering forged permits, priority/budget selection, unexpectedly oversized streams, truncated-tree coverage, and byte-buffer overwriting.
+- Ran `npm test -- --run packages/snapshot/src/snapshot.test.ts`.
+- Expected failure observed: `packages/snapshot/src/index.ts` did not exist.
+
+### 2026-08-12 18:42 IST — CP04 GREEN / RED: core snapshot and subtree fallback
+
+- Implemented process-bound unforgeable scan permits, bounded tree/blob inspection, path/type classification, priority ordering, raw stream limits, coverage accounting, and explicit buffer overwriting/release.
+- Initial four snapshot behaviors passed.
+- Added the required truncated-tree subtree fallback as a separate red slice.
+- Expected red result observed: 4 tests passed and the new fallback test failed because no subtree traversal existed.
+
+### 2026-08-12 18:44 IST — CP04 GREEN: truncated-tree fallback
+
+- Implemented priority-ranked, one-level recursive subtree fallback capped at 25 directories and bounded by the existing file/time budgets.
+- All 5 snapshot behaviors passed, including honest `treeTruncated` coverage even when selected subtree recovery succeeds.
+- Full verification initially found two lint issues: a control-character regex and an await-free async test generator. Replaced the regex with an explicit code-unit guard and made the test seam explicitly asynchronous.
+- A follow-up lint run found the string-spread Unicode rule; replaced it with indexed code-unit iteration.
+
+### 2026-08-12 18:46 IST — CP04 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 4 files, 22 tests.
+- `npm run build` passed for all five workspaces.
+- Runtime source audit found no clone, archive, package-install, process-execution, or build command in the snapshot path; the only textual `exec(` match is `RegExp.exec` in Link parsing.
+- Forged permits produce zero requests; only a live process-issued gate permit can reach Trees/Blobs.
+- CP04 accepted and ready to commit/push.

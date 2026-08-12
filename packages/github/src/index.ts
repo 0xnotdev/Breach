@@ -225,6 +225,14 @@ export interface ScanPermit {
   issuedAt: Date;
 }
 
+const issuedPermits = new WeakSet<object>();
+
+export function assertValidScanPermit(permit: ScanPermit): void {
+  if (!issuedPermits.has(permit)) {
+    throw new Error("Snapshot access requires a valid commit-gate permit");
+  }
+}
+
 export type GateOutcome =
   | { kind: "ready"; permit: ScanPermit; rateLimitRemaining?: number }
   | { kind: "waiting"; nextCheckAt: Date; attempt: number }
@@ -291,15 +299,17 @@ export class CommitGate {
     }
     const remainingText = result.headers["x-ratelimit-remaining"];
     const remaining = remainingText === undefined ? undefined : Number(remainingText);
+    const permit: ScanPermit = {
+      authorization: "commit-gate-v1",
+      repoId: candidate.repoId,
+      fullName: candidate.fullName,
+      headSha: sha,
+      issuedAt: now,
+    };
+    issuedPermits.add(permit);
     return {
       kind: "ready",
-      permit: {
-        authorization: "commit-gate-v1",
-        repoId: candidate.repoId,
-        fullName: candidate.fullName,
-        headSha: sha,
-        issuedAt: now,
-      },
+      permit,
       ...(remaining !== undefined && Number.isFinite(remaining)
         ? { rateLimitRemaining: remaining }
         : {}),
