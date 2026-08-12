@@ -1,5 +1,5 @@
 {
-  "name": "@breach/contracts",
+  "name": "@breach/storage",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,6 +11,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "zod": "^4.0.17"
+    "@breach/contracts": "0.1.0",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "pg-mem": "^3.0.5"
   }
 }

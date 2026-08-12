@@ -8,7 +8,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 |---|---|---|
 | CP00 Build contract | Complete | `spec.md`; ledger initialized; `git diff --check` passed |
 | CP01 Workspace/domain | Complete | 6 contract tests; lint/typecheck/test/build passed |
-| CP02 Persistence/sanitization | Pending | — |
+| CP02 Persistence/sanitization | Complete | 5 integration behaviors; 11 total tests; all gates passed |
 | CP03 Discovery/gate | Pending | — |
 | CP04 Bounded inspection | Pending | — |
 | CP05 Secrets/dependencies | Pending | — |
@@ -92,3 +92,33 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm run build` passed for `@breach/web` (five vinext build stages) and `@breach/contracts`.
 - Root npm workspaces, strict compiler settings, lint/test/build scripts, web workspace, domain vocabulary, coverage/static-evidence contracts, and lockfile are now established.
 - CP01 accepted and ready to commit/push.
+
+### 2026-08-12 18:21 IST — CP01 published / CP02 started
+
+- Committed CP01 as `8c52af9` (`checkpoint 01: establish typed workspace`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `8c52af9b83a2e4ed8c2bea249139f2695a89e198`; worktree was clean.
+- Began CP02 with the metadata-store public interface and integration behavior tests; implementation remains intentionally absent for the red run.
+
+### 2026-08-12 18:23 IST — CP02 RED: metadata persistence seam
+
+- Added five integration behaviors covering transactional discovery/cursor persistence, rollback, legal lifecycle transitions, sanitized finding round trips, and safe review notes.
+- Ran `npm test -- --run packages/storage/src/storage.test.ts`.
+- Expected failure observed: `packages/storage/src/index.ts` did not exist, so no persistence implementation loaded.
+
+### 2026-08-12 18:25 IST — CP02 GREEN iterations
+
+- Implemented PostgreSQL metadata migrations and the `MetadataStore` interface for discovery cursor/candidates, scans/coverage, sanitized findings, review records, lifecycle events, and metric samples.
+- Added transactional page recording, monotonic cursor advancement, candidate pre-validation, legal transition enforcement, strict finding parsing, and sensitive review-note rejection.
+- First implementation run failed all 5 tests because the in-memory PostgreSQL adapter does not provide `char_length`; replaced those constraints with portable non-empty checks.
+- Second run passed 3/5. The rollback fixture exposed the adapter's incomplete transaction emulation, and the note filter missed compound environment-variable names. Moved complete candidate validation before the transaction (also reducing partial-write risk) and expanded the secret-assignment guard.
+- Storage behavior suite then passed all 5 tests.
+- First typecheck failed on a narrowed candidate extension, object-method `this` inference, and an intentionally unsafe test object. Corrected the stored type, closed over the store interface, added explicit parsing types, and kept the runtime rejection fixture through an `unknown` cast.
+- First lint verification failed on numeric error interpolation and the deliberately untyped `pg-mem` adapter constructor. Corrected the messages and constrained the lint exception to that one external adapter line.
+
+### 2026-08-12 18:28 IST — CP02 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 2 files, 11 tests.
+- `npm run build` passed for web, contracts, and storage workspaces.
+- CP02 accepted and ready to commit/push.
