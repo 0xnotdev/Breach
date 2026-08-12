@@ -16,7 +16,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP07 Passive exploitability | Complete | 8 worked path behaviors; 35 total tests |
 | CP08 Orchestration/metrics | Complete | 5 lifecycle + durable claim/metric behavior; 41 tests |
 | CP09 Operator interface | Complete | 5 HTTP/SSE behaviors; 46 total tests |
-| CP10 Findings UI | Pending | — |
+| CP10 Findings UI | Complete | 2 server-render/artifact tests; all gates passed |
 | CP11 Investigation/review | Pending | — |
 | CP12 Stream/System UI | Pending | — |
 | CP13 Hardening/canary | Pending | — |
@@ -350,3 +350,32 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm run build` passed for all nine workspaces.
 - JSON/SSE tests verify forbidden raw values and source snippets are absent while allowed semantic source symbols remain available for investigation.
 - CP09 accepted and ready to commit/push.
+
+### 2026-08-12 19:34 IST — CP09 published / CP10 started
+
+- Committed CP09 as `cee3e7c` (`checkpoint 09: expose sanitized operator interface`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `cee3e7c53620215675c4c48ee2e4191e57f3fbf3`; worktree was clean.
+- Began CP10 by replacing the starter render contract with Findings-console acceptance checks before product UI implementation.
+
+### 2026-08-12 19:36 IST — CP10 RED: Findings console
+
+- Replaced starter tests with product-specific server-render assertions and disposable-artifact checks.
+- Ran the web test command. The build succeeded and both new tests failed against the still-present starter title, skeleton markup, preview metadata, and `_sites-preview` directory.
+- No product UI was implemented before this red result.
+
+### 2026-08-12 19:40 IST — CP10 GREEN: Findings console
+
+- Replaced the disposable starter with a dense, responsive, findings-first operator console.
+- Added repository/finding/language search, severity and family filters, explicit reset, deterministic ranking cues, required navigation, live/status metrics, coverage-aware empty-state wording, and a static-evidence-only boundary.
+- Added five sanitized demonstration findings spanning exploitability, secrets, dependencies, and configuration without embedding raw repository content or secret values.
+- Removed the starter preview implementation, loading-skeleton dependency, and unused starter icons.
+- The first green run exposed two acceptance-test mistakes: the empty state is conditional and an empty directory is not a shipped artifact. Tightened the tests to verify the conditional source branch and concrete artifact absence. The web build and both UI tests then passed.
+
+### 2026-08-12 19:42 IST — CP10 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 8 files, 46 domain/service tests.
+- `npm run build` passed for the web application and all eight library workspaces.
+- `npm test` in `apps/web` passed both server-render and starter-removal behaviors.
+- CP10 accepted and ready to commit/push.
