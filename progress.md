@@ -9,7 +9,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP00 Build contract | Complete | `spec.md`; ledger initialized; `git diff --check` passed |
 | CP01 Workspace/domain | Complete | 6 contract tests; lint/typecheck/test/build passed |
 | CP02 Persistence/sanitization | Complete | 5 integration behaviors; 11 total tests; all gates passed |
-| CP03 Discovery/gate | Pending | — |
+| CP03 Discovery/gate | Complete | 6 GitHub seam tests; 17 total tests; all gates passed |
 | CP04 Bounded inspection | Pending | — |
 | CP05 Secrets/dependencies | Pending | — |
 | CP06 CI/Docker/IaC | Pending | — |
@@ -122,3 +122,34 @@ This ledger records material specification, TDD, verification, commit, and push 
 - `npm test` passed: 2 files, 11 tests.
 - `npm run build` passed for web, contracts, and storage workspaces.
 - CP02 accepted and ready to commit/push.
+
+### 2026-08-12 18:30 IST — CP02 published / CP03 started
+
+- Committed CP02 as `3a13b41` (`checkpoint 02: enforce sanitized metadata persistence`) and pushed it to `origin/main`.
+- Verified local and remote `main` both resolve to `3a13b4110a4e77656c21d6e007afd899300a87a6`; worktree was clean.
+- Began CP03 with public behaviors for metadata-only candidate policy, paginated discovery recording, serialized GitHub dispatch, mandatory gate outcomes/backoff, and safe PushEvent acceleration.
+
+### 2026-08-12 18:32 IST — CP03 RED: GitHub intake and commit authorization
+
+- Added seven behavior tests across the public GitHub seam.
+- Ran `npm test -- --run packages/github/src/github.test.ts`.
+- Expected failure observed: `packages/github/src/index.ts` did not exist, so none of the intake/gate interfaces loaded.
+
+### 2026-08-12 18:34 IST — CP03 GREEN: intake, dispatcher, gate, accelerator
+
+- Implemented deterministic metadata-only candidate policy with quota-capacity buckets independent of later finding/exploitability scores.
+- Implemented creation-feed pagination with official GitHub headers and page-at-a-time sink commits before cursor advancement.
+- Implemented a single-flight serialized request dispatcher so concurrent callers never create concurrent GitHub REST requests.
+- Implemented commit-gate outcomes for 200/empty/409/404/403/429/unexpected responses, the 1m/5m/30m/2h/24h recheck schedule, Retry-After/reset handling, and a branded scan permit available only from a valid commit SHA.
+- Implemented PushEvent correlation that wakes only the matching `WAITING_FOR_COMMIT` candidate and never replaces discovery/gate completeness.
+- All 6 new behavior tests passed on the first green implementation run.
+- Verification initially found three lint issues confined to async test fakes and an `unknown` response-array read; corrected them without changing behavior.
+
+### 2026-08-12 18:36 IST — CP03 verification
+
+- `npm run lint` passed after the focused corrections.
+- `npm run typecheck` passed.
+- `npm test` passed: 3 files, 17 tests.
+- `npm run build` passed for web, contracts, GitHub, and storage workspaces.
+- Gate tests prove every non-ready outcome performs exactly one commit request and no content request.
+- CP03 accepted and ready to commit/push.

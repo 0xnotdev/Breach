@@ -1,0 +1,196 @@
+import { describe, expect, it } from "vitest";
+import {
+  AsyncSerialDispatcher,
+  CandidatePolicy,
+  CommitGate,
+  DiscoveryCollector,
+  applyPushEvent,
+  type GitHubResponse,
+  type GitHubTransport,
+} from "./index.js";
+
+class ScriptedTransport implements GitHubTransport {
+  readonly requests: string[] = [];
+  readonly headers: Array<Readonly<Record<string, string>>> = [];
+  #responses: GitHubResponse[];
+
+  constructor(responses: GitHubResponse[]) {
+    this.#responses = [...responses];
+  }
+
+  get(url: string, headers: Readonly<Record<string, string>>): Promise<GitHubResponse> {
+    this.requests.push(url);
+    this.headers.push(headers);
+    const response = this.#responses.shift();
+    if (response === undefined) throw new Error(`Unexpected request: ${url}`);
+    return Promise.resolve(response);
+  }
+}
+
+const response = (
+  status: number,
+  body: unknown,
+  headers: Readonly<Record<string, string>> = {},
+): GitHubResponse => ({ status, body, headers });
+
+describe("GitHub metadata intake and commit authorization", () => {
+  it("prioritizes backend metadata without reading repository content", () => {
+    const policy = new CandidatePolicy({ minimumScore: 5, capacityRatio: 0.08 });
+
+    expect(
+      policy.classify({
+        id: 701,
+        name: "payment-api",
+        fullName: "fixture/payment-api",
+        htmlUrl: "https://github.com/fixture/payment-api",
+        description: "Cloud auth backend server",
+        fork: false,
+      }),
+    ).toMatchObject({ state: "WAITING_FOR_COMMIT", score: 13 });
+    expect(
+      policy.classify({
+        id: 702,
+        name: "docs",
+        fullName: "fixture/docs",
+        htmlUrl: "https://github.com/fixture/docs",
+        description: "Documentation only",
+        fork: true,
+      }),
+    ).toMatchObject({ state: "SKIPPED" });
+  });
+
+  it("records every paginated discovery item before the cursor advances", async () => {
+    const transport = new ScriptedTransport([
+      response(
+        200,
+        [
+          {
+            id: 801,
+            name: "api",
+            full_name: "fixture/api",
+            html_url: "https://github.com/fixture/api",
+            description: "backend api",
+            fork: false,
+          },
+        ],
+        { link: '<https://api.github.com/repositories?since=801>; rel="next"' },
+      ),
+      response(200, [
+        {
+          id: 802,
+          name: "docs",
+          full_name: "fixture/docs",
+          html_url: "https://github.com/fixture/docs",
+          description: "docs",
+          fork: false,
+        },
+      ]),
+    ]);
+    const pages: Array<{ cursor: number; ids: number[] }> = [];
+    const collector = new DiscoveryCollector({
+      dispatcher: new AsyncSerialDispatcher(transport, "test-token"),
+      policy: new CandidatePolicy({ minimumScore: 5, capacityRatio: 1 }),
+      sink: {
+        recordDiscoveryPage(_stream, cursor, candidates) {
+          pages.push({ cursor, ids: candidates.map((candidate) => candidate.repoId) });
+          return Promise.resolve();
+        },
+      },
+      now: () => new Date("2026-08-12T12:00:00.000Z"),
+    });
+
+    await expect(collector.catchUp(800)).resolves.toBe(802);
+    expect(pages).toEqual([
+      { cursor: 801, ids: [801] },
+      { cursor: 802, ids: [802] },
+    ]);
+    expect(transport.requests).toEqual([
+      "https://api.github.com/repositories?since=800",
+      "https://api.github.com/repositories?since=801",
+    ]);
+    expect(transport.headers[0]).toMatchObject({
+      accept: "application/vnd.github+json",
+      authorization: "Bearer test-token",
+      "x-github-api-version": "2026-03-10",
+    });
+  });
+
+  it("serializes GitHub requests even when callers are concurrent", async () => {
+    let active = 0;
+    let maximum = 0;
+    const transport: GitHubTransport = {
+      async get() {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return response(200, []);
+      },
+    };
+    const dispatcher = new AsyncSerialDispatcher(transport);
+
+    await Promise.all([dispatcher.get("/one"), dispatcher.get("/two"), dispatcher.get("/three")]);
+    expect(maximum).toBe(1);
+  });
+
+  it("turns only a successful commit check into a content scan permit", async () => {
+    const now = new Date("2026-08-12T12:00:00.000Z");
+    const readyTransport = new ScriptedTransport([
+      response(200, [{ sha: "a".repeat(40) }], { "x-ratelimit-remaining": "4999" }),
+    ]);
+    const readyGate = new CommitGate(new AsyncSerialDispatcher(readyTransport), () => now);
+
+    await expect(
+      readyGate.check({ repoId: 901, fullName: "fixture/ready", attempts: 0 }),
+    ).resolves.toMatchObject({
+      kind: "ready",
+      permit: { repoId: 901, fullName: "fixture/ready", headSha: "a".repeat(40) },
+    });
+    expect(readyTransport.requests).toEqual([
+      "https://api.github.com/repos/fixture/ready/commits?per_page=1",
+    ]);
+  });
+
+  it("parks, closes, or rate-limits without making a content request", async () => {
+    const now = new Date("2026-08-12T12:00:00.000Z");
+    const cases = [
+      { status: 409, attempts: 0, kind: "waiting", next: "2026-08-12T12:01:00.000Z" },
+      { status: 409, attempts: 1, kind: "waiting", next: "2026-08-12T12:05:00.000Z" },
+      { status: 404, attempts: 0, kind: "closed", next: undefined },
+      { status: 429, attempts: 0, kind: "rate_limited", next: "2026-08-12T12:02:00.000Z" },
+    ];
+
+    for (const item of cases) {
+      const headers = item.status === 429 ? { "retry-after": "120" } : {};
+      const transport = new ScriptedTransport([response(item.status, {}, headers)]);
+      const gate = new CommitGate(new AsyncSerialDispatcher(transport), () => now);
+      const outcome = await gate.check({
+        repoId: 902,
+        fullName: "fixture/empty",
+        attempts: item.attempts,
+      });
+
+      expect(outcome.kind).toBe(item.kind);
+      if ("nextCheckAt" in outcome) expect(outcome.nextCheckAt.toISOString()).toBe(item.next);
+      if ("retryAt" in outcome) expect(outcome.retryAt.toISOString()).toBe(item.next);
+      expect(transport.requests).toHaveLength(1);
+      expect(transport.requests[0]).toContain("/commits?per_page=1");
+    }
+  });
+
+  it("uses PushEvent only to accelerate an already waiting candidate", () => {
+    const event = {
+      type: "PushEvent",
+      repo: { id: 1001, name: "fixture/waiting" },
+      payload: { head: "d".repeat(40), ref: "refs/heads/main", before: "0".repeat(40) },
+    };
+
+    expect(applyPushEvent(event, { repoId: 1001, state: "WAITING_FOR_COMMIT" })).toMatchObject({
+      kind: "wake",
+      repoId: 1001,
+      headSha: "d".repeat(40),
+    });
+    expect(applyPushEvent(event, { repoId: 1001, state: "SKIPPED" })).toEqual({ kind: "ignored" });
+    expect(applyPushEvent(event, null)).toEqual({ kind: "ignored" });
+  });
+});
