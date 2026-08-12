@@ -7,7 +7,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | Checkpoint | State | Evidence |
 |---|---|---|
 | CP00 Build contract | Complete | `spec.md`; ledger initialized; `git diff --check` passed |
-| CP01 Workspace/domain | Pending | — |
+| CP01 Workspace/domain | Complete | 6 contract tests; lint/typecheck/test/build passed |
 | CP02 Persistence/sanitization | Pending | — |
 | CP03 Discovery/gate | Pending | — |
 | CP04 Bounded inspection | Pending | — |
@@ -53,3 +53,42 @@ This ledger records material specification, TDD, verification, commit, and push 
 - Verified both artifacts exist and are non-empty (`spec.md` 19,698 bytes; `progress.md` 3,068 bytes before this entry).
 - `git diff --check` passed with no whitespace errors.
 - CP00 accepted. Next action is the first repository commit and remote push, followed by CP01 red tests.
+
+### 2026-08-12 18:10 IST — CP00 published / CP01 scaffold
+
+- Committed CP00 as `7256e1f` (`checkpoint 00: define build contract`) and pushed `main` to `origin`.
+- Verified local and remote `main` both resolve to `7256e1f41fbe8331e516a4f325b36e7b9ea496c1`; worktree was clean.
+- Initialized the required web-console starter at `apps/web`, installed its dependencies, started its retained local preview, verified HTTP 200 at `http://localhost:3000`, and opened it in the Codex browser panel. The site workflow caused this initialization; product UI has not yet been implemented.
+- Added the root npm-workspace/TypeScript/Vitest/ESLint scaffold and the first contract behavior tests.
+
+### 2026-08-12 18:12 IST — CP01 RED: public metadata contracts
+
+- Ran `npm test -- --run packages/contracts/src/contracts.test.ts`.
+- Expected failure observed: the public contract module `packages/contracts/src/index.ts` did not exist, so the suite could not load `./index.js`.
+- No implementation was added before this red result.
+
+### 2026-08-12 18:14 IST — CP01 GREEN / RED: schemas and score tiers
+
+- Implemented strict public metadata schemas for pipeline/review states, coverage, static exploitability, semantic path nodes, secret evidence, and sanitized findings.
+- The initial five contract tests passed.
+- Added a second behavior slice for the specification's exact exploitability tier boundaries.
+- Expected red result observed: 5 tests passed and the new boundary test failed because `classifyExploitabilityLevel` was not implemented.
+
+### 2026-08-12 18:16 IST — CP01 GREEN: score tiers
+
+- Implemented the minimal 0–100 score classifier with exact `possible`, `plausible`, `probable`, and `high_confidence_static_path` boundaries.
+- All 6 public contract behavior tests passed.
+- Strict TypeScript compilation passed.
+- The first lint verification failed: typed linting attempted to parse root configuration outside the project, and Zod v4 flagged three deprecated chained validators. Tests and typecheck remained green.
+- Corrected lint scoping and replaced the deprecated validators with Zod v4 top-level validators.
+- A second combined shell run still reported lint configuration errors for `vitest.config.ts`; because later commands succeeded, the shell's final exit code was zero. This was treated as a failed lint check, not a successful verification.
+- Excluded build-tool configuration from source linting and reran every gate independently in parallel.
+
+### 2026-08-12 18:19 IST — CP01 verification
+
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm test` passed: 1 file, 6 tests.
+- `npm run build` passed for `@breach/web` (five vinext build stages) and `@breach/contracts`.
+- Root npm workspaces, strict compiler settings, lint/test/build scripts, web workspace, domain vocabulary, coverage/static-evidence contracts, and lockfile are now established.
+- CP01 accepted and ready to commit/push.

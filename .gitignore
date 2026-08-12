@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+.wrangler/
+.next/
+.vinext/
+apps/web/build/
+apps/web/.open-next/
+playwright-report/
+test-results/
+.DS_Store
