@@ -1,0 +1,10 @@
+{
+  "name": "@breach/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": { "build": "tsc -b", "start": "node dist/index.js", "test": "vitest run src/index.test.ts", "migrate": "node dist/migrate.js", "seed": "node dist/seed.js" },
+  "dependencies": { "@breach/contracts": "0.1.0", "@breach/operator": "0.1.0", "@breach/storage": "0.1.0", "pg": "8.16.3" }
+}

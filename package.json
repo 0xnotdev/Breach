@@ -15,8 +15,10 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:web": "npm run test --workspace @breach/web",
+    "test:browser": "npm run test:browser --workspace @breach/web",
     "test:watch": "vitest",
-    "verify": "npm run lint && npm run typecheck && npm run test && npm run build"
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run test:web && npm run test:browser"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

@@ -1,0 +1,29 @@
+name: validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.14.1
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run test --workspace @breach/web
+      - run: npm run test:browser --workspace @breach/web
+      - run: docker compose config --quiet
+        env:
+          GITHUB_TOKEN: validation-placeholder
+          FINGERPRINT_HMAC_KEY: validation-placeholder-at-least-32-bytes
+          OPERATOR_TOKEN: validation-operator-token

@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
+  "include": ["src/**/*.ts"],
+  "references": [{ "path": "../../packages/analyzers" }, { "path": "../../packages/contracts" }, { "path": "../../packages/dataflow" }, { "path": "../../packages/github" }, { "path": "../../packages/orchestrator" }, { "path": "../../packages/security" }, { "path": "../../packages/snapshot" }, { "path": "../../packages/storage" }]
+}

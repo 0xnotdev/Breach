@@ -20,7 +20,7 @@ This ledger records material specification, TDD, verification, commit, and push 
 | CP11 Investigation/review | Complete | 2 detail-route behaviors; 4 web tests; all gates passed |
 | CP12 Stream/System UI | Complete | 6 render + 2 browser behaviors; all gates passed |
 | CP13 Hardening/canary | Complete | 7 security behaviors; Compose valid; all gates passed |
-| CP14 Runnable product/ops | Pending | — |
+| CP14 Runnable product/ops | Complete | 6 runtime/ops tests; 3 images; real DB/API/web smoke; all gates passed |
 | CP15 Final verification | Pending | — |
 
 ## Progress log
@@ -492,3 +492,88 @@ This ledger records material specification, TDD, verification, commit, and push 
 
 - Committed and pushed the initial CP13 hardening implementation as `d70bd05` and verified local/remote equality.
 - The post-push tracked-file audit found the root `.env` ignore rule also excluded the controlled canary fixture. Renamed the fixture to non-ignored `credential.txt`, updated the proof test, and prepared a corrective checkpoint commit so the reproducible fixture is present on GitHub.
+
+### 2026-08-12 20:25 IST — CP13 correction published / CP14 started
+
+- Committed the tracked-fixture correction as `52b07e5` and pushed it to `origin/main`; local and remote `main` match and `git ls-files fixtures` lists the canary.
+- Began CP14 with executable API/worker runtime contracts: strict configuration, health/readiness, sanitized seeded API data, and a controlled discovery-to-review demonstration.
+
+### 2026-08-12 20:27 IST — CP14 RED: runnable processes
+
+- Added API and worker workspace contracts before implementation.
+- Ran both targeted suites. Collection failed on the expected missing API `index.ts` and worker `runtime.ts` modules.
+
+### 2026-08-12 20:33 IST — CP14 GREEN iteration: API and worker entrypoints
+
+- Implemented strict API/worker environment parsing, live/readiness endpoints, graceful shutdown, bounded request/response bodies, fixed safe failure logs, and a real PostgreSQL-backed operator data source.
+- Implemented GitHub/OSV fetch adapters with manual redirects, exact egress policy, response/time bounds, serialized GitHub dispatch, discovery, due-candidate commit gates, bounded snapshots, analyzers, orchestration, and periodic worker cycles.
+- Added a controlled full orchestration demo that passes a fake committed HEAD through bounded analysis, redacted persistence seams, human confirmation, and aggregate metrics.
+
+### 2026-08-12 20:36 IST — CP14 RED: operations surface
+
+- Added operational contract tests requiring configuration, a versioned migration, sanitized seed path, pinned CI, three runbooks, four healthy Compose services, and published ports.
+- Both behaviors failed as expected: `.env.example` and the supporting artifacts were absent, while Compose contained only PostgreSQL and the worker.
+
+### 2026-08-12 20:40 IST — CP14 GREEN operations / container build failure
+
+- Added the environment template, versioned SQL migration, executable migration and sanitized seed, four-service Compose stack, non-root API/web images, health checks, pinned least-privilege CI, architecture/setup/limits/troubleshooting README, and operations/incident/disclosure runbooks.
+- Both operational contract behaviors passed; lint and strict typecheck passed after removing void-expression and body-buffer ambiguities.
+- `docker compose config --quiet` passed. The initial image build failed reproducibly: host `tsconfig.tsbuildinfo` entered the context while `dist` was excluded, causing TypeScript to consider the container build current without emitting `apps/api/dist`.
+- Excluded all TypeScript and web build caches from Docker context and narrowed the worker image build to its referenced workspace graph before retrying.
+
+### 2026-08-12 20:44 IST — CP14 container portability iteration
+
+- The clean-context retry built the API image successfully.
+- The web image then failed because npm's Windows-generated lockfile omitted Rolldown's Linux native optional binding. Declared the exact `@rolldown/binding-linux-x64-gnu@1.0.1` package explicitly and pinned every Node base stage to the digest resolved during the build.
+
+### 2026-08-12 20:47 IST — CP14 clean-clone web iteration
+
+- The native binding fix succeeded and the web build reached Vite configuration.
+- Docker then exposed an import of gitignored generated `apps/web/build/sites-vite-plugin.ts`; that helper could never exist in a clean clone or CI checkout.
+- Replaced the preview/generated-site configuration with a tracked minimal vinext production configuration, eliminating the hidden build dependency.
+
+### 2026-08-12 20:50 IST — CP14 cross-platform CSS iteration
+
+- The tracked Vite configuration passed local web tests and the clean Docker build advanced into CSS processing.
+- The image then exposed the same cross-platform optional-dependency issue in an unused Tailwind/PostCSS stack (`lightningcss` Linux binding). Breach uses authored plain CSS, so removed the unused PostCSS config and Tailwind dependencies instead of expanding the native dependency surface.
+
+### 2026-08-12 20:53 IST — CP14 plain-CSS correction
+
+- The worker compiled successfully inside Docker and advanced to image export.
+- The web build then identified one remaining starter-era `@import "tailwindcss"` at the top of the otherwise plain-CSS stylesheet. Removed that import to complete the dependency removal.
+
+### 2026-08-12 20:56 IST — CP14 dependency/context minimization
+
+- The subsequent build was interrupted by an npm registry `ECONNRESET` while fetching unused Wrangler.
+- Removed all remaining disposable Cloudflare/D1/Drizzle/starter auth/example/worker configuration and packages from the private console. This reduces clean-install and container surface to the framework, React, lint/type tooling, and Playwright actually used by Breach.
+
+### 2026-08-12 20:59 IST — CP14 Vite native-binding correction
+
+- The minimized install completed and the worker compiled inside Docker.
+- Vite itself uses Lightning CSS for production minification, independent of the removed PostCSS stack; the Windows lockfile omitted that Linux binding too. Added the exact Vite-compatible `lightningcss-linux-x64-gnu@1.32.0` optional dependency.
+
+### 2026-08-12 21:03 IST — CP14 images green / runtime mount correction
+
+- Worker and web images built successfully; together with the earlier API result, all three application images now build from the tracked clean context.
+- The PostgreSQL image pulled and became healthy. The first migration container was rejected because flow-style YAML split the comma-delimited tmpfs option into invalid mount paths. Quoted the complete API/web tmpfs mount strings and pinned PostgreSQL to the pulled digest.
+
+### 2026-08-12 21:06 IST — CP14 runtime entrypoint correction
+
+- Real PostgreSQL migration and sanitized demo seed both completed successfully; the API started and passed its readiness health check.
+- Web startup failed because its entrypoint assumed a root-hoisted vinext binary. Inspected the built image, confirmed npm installed vinext under `apps/web/node_modules`, and changed the entrypoint to invoke that exact tracked dependency through Node.
+
+### 2026-08-12 21:10 IST — CP14 production-like runtime green
+
+- Rebuilt the web image with the corrected entrypoint.
+- Ran real PostgreSQL, executed the migration and sanitized seed in the API image, and started API/web with their read-only/non-root Compose settings; all three service health checks reported healthy.
+- Verified inside the isolated Docker network that the authenticated API returned exactly one sanitized finding, the web root rendered Breach, and neither the fake canary assignment nor raw value appeared in the API response.
+- Docker Desktop did not expose the published ports to the Windows host despite correct port bindings, so the smoke assertion ran from inside each healthy container. The Compose services were then stopped; the named metadata volume remains recoverable.
+- Removed the redundant nested web lockfile so clean installs have one authoritative root lock, and extended the root `verify` command to include server-render and Chromium journeys.
+
+### 2026-08-12 21:13 IST — CP14 verification
+
+- `npm run verify` passed end to end: lint, strict typecheck, 12 test files/59 tests, all 12 workspaces built, 6 server-render behaviors, and 2 Chromium journeys.
+- The controlled discovery-to-review demonstration passed and its serialized output contained neither the canary assignment nor raw value.
+- `docker compose config --quiet` passed.
+- API, worker, and web images built from the tracked Linux context; real migration, seed, health, authenticated API, and web checks passed against PostgreSQL.
+- CP14 accepted and ready to commit/push.

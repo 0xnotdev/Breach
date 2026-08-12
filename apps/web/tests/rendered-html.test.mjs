@@ -1,19 +1,27 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { after, before } from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
 
-async function render(path = "/") {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
+const port = 4300 + process.pid % 500;
+const baseUrl = `http://127.0.0.1:${String(port)}`;
+let server;
 
-  return worker.fetch(
-    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+before(async () => {
+  server = spawn(process.execPath, ["node_modules/vinext/dist/cli.js", "start", "--port", String(port), "--hostname", "127.0.0.1"], { cwd: templateRoot, stdio: "ignore" });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try { const response = await fetch(baseUrl); if (response.ok) return; } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Production server did not become ready");
+});
+
+after(() => { server?.kill(); });
+
+function render(path = "/") {
+  return fetch(`${baseUrl}${path}`, { headers: { accept: "text/html" } });
 }
 
 test("server-renders the findings-first operator console", async () => {

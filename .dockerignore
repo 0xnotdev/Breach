@@ -5,6 +5,12 @@
 node_modules
 **/dist
 **/coverage
+**/*.tsbuildinfo
+**/.next
+**/.vinext
+**/.wrangler
+**/build
+**/.open-next
 fixtures
 test-results
 playwright-report

@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     environment:
       POSTGRES_DB: breach
       POSTGRES_USER: breach
@@ -13,6 +13,29 @@ services:
     networks: [metadata]
     volumes: [metadata:/var/lib/postgresql/data]
 
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://breach:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/breach
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN}
+      API_PORT: 8080
+    ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    networks: [metadata]
+
   worker:
     build:
       context: .
@@ -24,6 +47,13 @@ services:
       DATABASE_URL: postgresql://breach:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/breach
       GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN}
       FINGERPRINT_HMAC_KEY: ${FINGERPRINT_HMAC_KEY:?set FINGERPRINT_HMAC_KEY}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-30000}
+      WORKER_HEALTH_PORT: 8081
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
@@ -43,6 +73,25 @@ services:
     init: true
     restart: unless-stopped
     networks: [metadata, egress]
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports: ["3000:3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    networks: [metadata]
 
 networks:
   metadata:
