@@ -11,7 +11,9 @@ node_modules
 **/.wrangler
 **/build
 **/.open-next
-fixtures
+fixtures/*
+!fixtures/canary-repository/
+!fixtures/canary-repository/credential.txt
 test-results
 playwright-report
 *.log

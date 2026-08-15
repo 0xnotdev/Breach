@@ -16,6 +16,16 @@ Disable host swap for production workers, or use an encrypted and separately aud
 
 YAML and XML inputs are byte/depth bounded. YAML custom tags and aliases are denied. XML DTD, entity, `SYSTEM`, and `PUBLIC` declarations are denied and entity processing is disabled. Display/log text is NFC-normalized, bounded, and control characters are visibly escaped.
 
+## Logging boundary
+
+Runtime output is restricted to bounded repository IDs/names, commit SHA, state, rule ID, counts, durations, rate-limit values, and allowlisted reason codes. Untrusted text is normalized, length-bounded, and terminal controls are visibly escaped. GitHub response bodies, blob/source content, parser input, secret values, review notes, authorization headers, token values, and database passwords are prohibited in logs and browser errors. Public failure responses use fixed safe codes rather than exception messages.
+
+## Failure reasons and lifecycle
+
+Every claimed terminal failure releases snapshot buffers, persists bounded coverage and a safe lifecycle state when PostgreSQL is reachable, and increments sanitized metrics without retaining the thrown input. The allowlist distinguishes `github_rate_limited`, `github_unavailable`, `repo_gone`, `empty_repo`, `tree_failed`, `tree_truncated`, `blob_failed`, `blob_oversize`, `budget_exhausted`, `parser_failed`, `analysis_timeout`, and `database_failed`. A database outage cannot be written into the unavailable database, so readiness fails and the scheduler emits only a fixed generic message until metadata service returns.
+
+The full public transition graph is tested. `RATE_LIMITED` can recover only after its deadline; `SKIPPED`, `SCANNED_NO_FINDINGS`, `SCANNED_FINDINGS`, `PARTIAL`, and `FAILED` are terminal for this first-HEAD MVP. Unique `(repo_id, head_sha)` scan identity plus atomic row locking prevents duplicate concurrent scans.
+
 ## Canary proof
 
 The controlled fixture contains a structurally valid but nonfunctional value. `npm run canary --workspace @breach/worker` runs it through the real commit gate, Git tree/blob snapshot reader, analyzers, PostgreSQL store, and operator serializer. The Chromium acceptance test adds rendered DOM plus local/session storage to the same audit. The audit fails unless the raw value occurs zero times across every inspected surface, transient snapshot buffers are cleared, and the full HMAC-SHA256 fingerprint occurs only within the bounded sanitized metadata representations expected for that run.

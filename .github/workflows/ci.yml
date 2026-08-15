@@ -53,3 +53,23 @@ jobs:
           GITHUB_TOKEN: validation-placeholder
           FINGERPRINT_HMAC_KEY: validation-placeholder-at-least-32-bytes
           OPERATOR_TOKEN: validation-operator-token
+      - name: Fresh-volume Compose and runtime canary
+        env:
+          GITHUB_TOKEN: validation-placeholder-not-used-by-started-services
+          FINGERPRINT_HMAC_KEY: validation-placeholder-at-least-32-bytes
+          OPERATOR_TOKEN: validation-operator-token
+          POSTGRES_PASSWORD: ci-fresh-compose-password
+        run: |
+          docker compose down --volumes --remove-orphans
+          docker compose up --detach --wait postgres api egress-proxy web
+          curl --fail --silent --show-error http://127.0.0.1:8080/readyz
+          curl --fail --silent --show-error http://127.0.0.1:3000/ > /dev/null
+          docker compose run --rm --build canary
+      - name: Remove fresh Compose environment
+        if: always()
+        env:
+          GITHUB_TOKEN: validation-placeholder-not-used-by-started-services
+          FINGERPRINT_HMAC_KEY: validation-placeholder-at-least-32-bytes
+          OPERATOR_TOKEN: validation-operator-token
+          POSTGRES_PASSWORD: ci-fresh-compose-password
+        run: docker compose down --volumes --remove-orphans
