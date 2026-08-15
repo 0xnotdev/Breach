@@ -1,0 +1,70 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: breach-worker-egress
+  namespace: breach
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: breach-worker
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: breach-postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: breach-egress-proxy
+      toPorts:
+        - ports:
+            - port: "3128"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: breach-egress-proxy
+  namespace: breach
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: breach-egress-proxy
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: breach-worker
+      toPorts:
+        - ports:
+            - port: "3128"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toFQDNs:
+        - matchName: api.github.com
+        - matchName: api.osv.dev
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

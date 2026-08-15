@@ -205,7 +205,7 @@ Every checkpoint follows a vertical red -> green cycle: add one failing behavior
 
 ### CP13 — Threat-model hardening and zero-retention proof
 
-- Hardened worker/container: non-root, read-only root, tmpfs/no source volume, no host/Docker socket, disabled privilege escalation, resource/process/file-descriptor limits, core dumps off, documented swap requirement, allowlisted egress design.
+- Hardened worker/container: non-root, read-only root, tmpfs/no source volume, no host/Docker socket, disabled privilege escalation, resource/process/file-descriptor limits, core dumps off, documented swap requirement, and no direct external route outside an exact GitHub/OSV CONNECT proxy plus production FQDN-aware policy.
 - Parser defenses: safe YAML, XXE/network-disabled XML, depth/size bounds, defensive Unicode, terminal/control escaping, URL non-following.
 - Controlled fake canary repository contains no functional credential.
 - A reproducible runtime audit runs the fixture through commit gate, bounded snapshot, analyzers, PostgreSQL, API serialization, rendered web output, and browser storage; it proves zero raw occurrences, cleared ephemeral snapshot buffers, and only bounded intended HMAC fingerprint representations.

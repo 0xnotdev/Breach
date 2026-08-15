@@ -63,7 +63,7 @@ export class EgressPolicy {
     let url: URL;
     try { url = new URL(target); } catch { throw new Error("Egress denied: invalid URL"); }
     const host = url.hostname.toLocaleLowerCase("en-US");
-    const serviceAllowed = url.protocol === "https:" && (host === "api.github.com" || host === "api.osv.dev");
+    const serviceAllowed = url.protocol === "https:" && (url.port === "" || url.port === "443") && (host === "api.github.com" || host === "api.osv.dev");
     const internalAllowed = (url.protocol === "http:" || url.protocol === "https:") && this.#internalHosts.has(host);
     if (url.username !== "" || url.password !== "" || (!serviceAllowed && !internalAllowed)) throw new Error("Egress denied: destination is not allowlisted");
     return url;

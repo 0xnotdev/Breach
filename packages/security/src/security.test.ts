@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
-import { SecretScanner } from "@breach/analyzers";
+import { parseDependencies, scanConfiguration, SecretScanner } from "@breach/analyzers";
 import { CanaryAuditor, EgressPolicy, escapeUntrustedText, parseSafeXml, parseSafeYaml } from "./index.js";
 
 describe("security boundary", () => {
@@ -25,7 +25,7 @@ describe("security boundary", () => {
     expect(policy.assertAllowed("https://api.github.com/repos/o/r/git/trees/head").hostname).toBe("api.github.com");
     expect(policy.assertAllowed("https://api.osv.dev/v1/querybatch").hostname).toBe("api.osv.dev");
     expect(policy.assertAllowed("http://postgres:5432/health").hostname).toBe("postgres");
-    for (const target of ["https://github.com/owner/repository", "https://example.test/payload", "file:///etc/passwd", "https://api.github.com@example.test/"]) expect(() => policy.assertAllowed(target)).toThrow(/egress denied/i);
+    for (const target of ["https://github.com/owner/repository", "https://example.test/payload", "file:///etc/passwd", "https://api.github.com@example.test/", "https://api.github.com:444/repos/o/r"]) expect(() => policy.assertAllowed(target)).toThrow(/egress denied/i);
   });
 
   it("parses bounded safe YAML while rejecting tags, aliases, controls, and deep input", () => {
@@ -67,6 +67,23 @@ describe("security boundary", () => {
     expect(findings).toHaveLength(1);
     expect(network).not.toHaveBeenCalled();
     network.mockRestore();
+  });
+
+  it("repositoryControlledUrlIsNeverFetchedByStaticAnalyzers", () => {
+    const network = vi.spyOn(globalThis, "fetch");
+    const files = [
+      { path: "src/urls.ts", bytes: new TextEncoder().encode("export const webhook = 'https://example.test/hook'; export const api = 'https://api.github.com/repos/attacker/data';") },
+      { path: "Dockerfile", bytes: new TextEncoder().encode("FROM registry.example.test/attacker/image:latest\nLABEL reference=https://api.osv.dev/attacker\n") },
+      { path: "package.json", bytes: new TextEncoder().encode('{"dependencies":{"remote":"https://registry.example.test/archive.tgz"}}') },
+    ];
+    try {
+      new SecretScanner("test-only-fingerprint-key-32-bytes-minimum").scan(files);
+      files.flatMap((file) => parseDependencies(file.path, file.bytes));
+      scanConfiguration(files);
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      network.mockRestore();
+    }
   });
 
   it("declares a non-root read-only worker with bounded writable and process resources", async () => {

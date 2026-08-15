@@ -36,6 +36,25 @@ services:
     cap_drop: [ALL]
     networks: [metadata]
 
+  egress-proxy:
+    build:
+      context: .
+      dockerfile: deploy/egress-proxy.Dockerfile
+    environment:
+      EGRESS_PROXY_PORT: 3128
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3128/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    init: true
+    restart: unless-stopped
+    networks: [proxy_control, egress]
+
   worker:
     build:
       context: .
@@ -43,12 +62,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      egress-proxy:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://breach:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/breach
       GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN}
       FINGERPRINT_HMAC_KEY: ${FINGERPRINT_HMAC_KEY:?set FINGERPRINT_HMAC_KEY}
       POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-30000}
       WORKER_HEALTH_PORT: 8081
+      NODE_USE_ENV_PROXY: "1"
+      HTTPS_PROXY: http://egress-proxy:3128
+      HTTP_PROXY: http://egress-proxy:3128
+      NO_PROXY: postgres,api,web,127.0.0.1,localhost
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -72,7 +97,7 @@ services:
           pids: 128
     init: true
     restart: unless-stopped
-    networks: [metadata, egress]
+    networks: [metadata, proxy_control]
 
   web:
     build:
@@ -95,6 +120,8 @@ services:
 
 networks:
   metadata:
+    internal: true
+  proxy_control:
     internal: true
   egress: {}
 

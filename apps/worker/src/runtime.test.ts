@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { newDb } from "pg-mem";
 import type { Pool } from "pg";
-import { readWorkerConfig, runControlledDemo, runZeroRetentionCanary } from "./runtime.js";
+import { FetchBlobTransport, FetchGitHubTransport, readWorkerConfig, runControlledDemo, runZeroRetentionCanary } from "./runtime.js";
 import { CandidatePolicy } from "@breach/github";
 
 async function controlledCanary(): Promise<string> {
@@ -50,6 +50,31 @@ describe("worker runtime", () => {
     expect(config).toMatchObject({ candidateMinimumScore: 60, targetSelectionRatio: 0.07 });
     expect(decisions[0]).toMatchObject({ state: "WAITING_FOR_COMMIT", reason: "selected" });
     expect(decisions.slice(1).every((decision) => decision.state === "SKIPPED")).toBe(true);
+  });
+
+  it("repositoryControlledUrlIsNeverFetched", async () => {
+    const network = vi.spyOn(globalThis, "fetch");
+    const metadata = new FetchGitHubTransport();
+    const blobs = new FetchBlobTransport("test-read-only-token");
+    const repositoryControlledTargets = [
+      "https://github.com/owner/repository",
+      "https://example.test/webhook",
+      "https://registry.npmjs.org/package",
+      "https://registry.terraform.io/module",
+      "https://images.example.test/base-layer",
+      "http://127.0.0.1:8080/admin",
+    ];
+    try {
+      for (const target of repositoryControlledTargets) {
+        await expect(metadata.get(target, {})).rejects.toThrow(/egress denied/i);
+        await expect((async () => {
+          await blobs.stream(target, {})[Symbol.asyncIterator]().next();
+        })()).rejects.toThrow(/egress denied/i);
+      }
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      network.mockRestore();
+    }
   });
 
   it("runs discovery through review with no source persistence", async () => {
