@@ -4,8 +4,16 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./migrations": "./src/migrations.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./migrations": {
+      "types": "./src/migrations.ts",
+      "development": "./src/migrations.ts",
+      "import": "./dist/migrations.js"
+    }
   },
   "types": "./src/index.ts",
   "scripts": {

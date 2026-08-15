@@ -823,3 +823,11 @@ This section is append-only. It records the red/green evidence for the productio
 - RED: production API/worker entry tests reproduced the lifecycle defect by closing twice and requiring SIGTERM/SIGINT listener counts to return to their baseline. API close threw `Server is not running`; worker close left one listener for each signal.
 - GREEN: API and worker shutdown are now single-flight and idempotent, remove their own signal hooks before teardown, preserve injected-pool ownership, and convert signal-path teardown failures into generic operational errors instead of unhandled rejections. Repeated explicit close/stop succeeds and both listener counts return exactly to baseline.
 - Full local verification passed again: lint, strict typecheck, 15 files/124 tests, 98.00% statements/lines, 90.07% branches, 93.16% functions, all builds, 13 production web checks, 5 Chromium journeys, dependency audit, and the 117-file tracked-secret audit.
+
+### 2026-08-15 18:39 IST — fix 28 published / fix 29 compiled storage exports RED/GREEN
+
+- Published fix 28 as `cffb203fc1dab282eac38259aa9b47af9e2a1239` (`fix 28: make service shutdown idempotent`). Local, remote-tracking, and advertised `main` matched; the worktree was clean.
+- GitHub Actions run `31886238950` proved the shutdown repair: coverage, build, the first real PostgreSQL migration, and the idempotent migration rerun all passed. The controlled integration then failed immediately with `ERR_MODULE_NOT_FOUND` because the storage package's Node export selected `src/index.ts`, whose compiled-specifier `./migrations.js` intentionally exists only beside `dist/index.js`.
+- RED: the operations contract required source `types`/`development` targets but compiled `import` targets for both the storage root and migration subpath; the old string source exports failed.
+- GREEN: conditional package exports now keep TypeScript source for type checking/Vitest development resolution and point ordinary Node ESM imports at `dist/index.js` and `dist/migrations.js`. A direct Node 24 production import after build loads both `createMetadataStore` and `runMigrations` successfully.
+- Full local verification passed with 15 files/125 tests, 98.00% statements/lines, 90.07% branches, 93.16% functions, all builds, 13 web checks, 5 Chromium journeys, dependency audit, and the 117-file tracked-secret audit.

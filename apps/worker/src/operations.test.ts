@@ -14,6 +14,12 @@ describe("operational product contract", () => {
     expect(files[3]).toMatch(/test:browser/);
   });
 
+  it("publishes compiled storage entry points while retaining source types", async () => {
+    const manifest = JSON.parse(await read("packages/storage/package.json")) as { exports?: Record<string, { types?: string; development?: string; import?: string }> };
+    expect(manifest.exports?.["."]).toEqual({ types: "./src/index.ts", development: "./src/index.ts", import: "./dist/index.js" });
+    expect(manifest.exports?.["./migrations"]).toEqual({ types: "./src/migrations.ts", development: "./src/migrations.ts", import: "./dist/migrations.js" });
+  });
+
   it("declares API, worker, web, and PostgreSQL services with health checks", async () => {
     const compose = await read("compose.yaml");
     for (const service of ["postgres", "migrate", "api", "egress-proxy", "worker", "web"]) expect(compose).toMatch(new RegExp(`\\n  ${service}:`));
