@@ -831,3 +831,10 @@ This section is append-only. It records the red/green evidence for the productio
 - RED: the operations contract required source `types`/`development` targets but compiled `import` targets for both the storage root and migration subpath; the old string source exports failed.
 - GREEN: conditional package exports now keep TypeScript source for type checking/Vitest development resolution and point ordinary Node ESM imports at `dist/index.js` and `dist/migrations.js`. A direct Node 24 production import after build loads both `createMetadataStore` and `runMigrations` successfully.
 - Full local verification passed with 15 files/125 tests, 98.00% statements/lines, 90.07% branches, 93.16% functions, all builds, 13 web checks, 5 Chromium journeys, dependency audit, and the 117-file tracked-secret audit.
+
+### 2026-08-15 18:42 IST — fix 29 published / fix 30 real-SSE selector correction
+
+- Published fix 29 as `9af41c12c254eeb9df875664ef942b7786e5b988` (`fix 29: publish compiled storage exports`). Local, remote-tracking, and advertised `main` matched; the worktree was clean.
+- GitHub Actions run `31886430202` passed coverage, build, both migration invocations, controlled production worker analysis, PostgreSQL safety checks, real API/web startup, findings/filter/investigation/review/reload behavior, and delivery of a lifecycle event inserted after the SSE connection.
+- The harness then failed only because its exact-text repository locator correctly found two rows: discovery persistence emits both `DISCOVERED` and terminal `SKIPPED` events for the same candidate. Replaced the ambiguous locator with one scoped to an `article.stream-event` containing both the repository and `SKIPPED`, preserving the stronger requirement that the later terminal event reached the live UI.
+- Static syntax, lint, and tracked-secret checks pass for the corrected harness; the next clean CI run remains the authoritative PostgreSQL/full-stack validation.

@@ -217,8 +217,7 @@ async function main() {
     await page.getByText("CONNECTED", { exact: true }).waitFor();
     const store = await createMetadataStore(pool);
     await store.recordDiscoveryPage("controlled-late-event", 20005, [{ repoId: 20005, fullName: "fixture/late-stream-event", htmlUrl: "https://github.com/fixture/late-stream-event", discoveredAt: new Date(), priorityScore: 0, candidateState: "SKIPPED", selectionReason: "score" }]);
-    await page.getByText("fixture/late-stream-event", { exact: true }).waitFor({ timeout: 15_000 });
-    await page.getByText("SKIPPED", { exact: true }).first().waitFor();
+    await page.locator("article.stream-event", { hasText: "fixture/late-stream-event" }).filter({ hasText: "SKIPPED" }).waitFor({ timeout: 15_000 });
 
     await page.goto(`http://127.0.0.1:${String(webPort)}/system`);
     await page.getByRole("heading", { name: "System" }).waitFor();
