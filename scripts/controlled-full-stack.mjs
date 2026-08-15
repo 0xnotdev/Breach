@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { Pool } from "pg";
 import { startApi } from "../apps/api/dist/index.js";
@@ -49,14 +49,26 @@ async function waitForHttp(url, child) {
   throw latest instanceof Error ? latest : new Error("Web readiness timed out");
 }
 
+function childExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForChildExit(child, timeoutMs) {
+  if (childExited(child)) return true;
+  return new Promise((resolve) => {
+    const exited = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => { child.off("exit", exited); resolve(false); }, timeoutMs);
+    timer.unref();
+    child.once("exit", exited);
+  });
+}
+
 async function stopChild(child) {
-  if (child.exitCode !== null) return;
+  if (childExited(child)) return;
   child.kill("SIGTERM");
-  await Promise.race([
-    once(child, "exit"),
-    new Promise((resolve) => setTimeout(resolve, 5_000)),
-  ]);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  if (await waitForChildExit(child, 5_000)) return;
+  child.kill("SIGKILL");
+  if (!await waitForChildExit(child, 5_000)) throw new Error("Controlled web process did not stop");
 }
 
 async function dropDatabase(admin, databaseName) {
@@ -180,8 +192,8 @@ async function main() {
     const apiAddress = api.server.address();
     if (typeof apiAddress !== "object" || apiAddress === null) throw new Error("Controlled API did not bind");
     const webPort = await reservePort();
-    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-    web = spawn(npmCommand, ["run", "start", "--", "--port", String(webPort), "--hostname", "127.0.0.1"], {
+    const vinextCli = fileURLToPath(new URL("../node_modules/vinext/dist/cli.js", import.meta.url));
+    web = spawn(process.execPath, [vinextCli, "start", "--port", String(webPort), "--hostname", "127.0.0.1"], {
       cwd: new URL("../apps/web/", import.meta.url),
       env: { ...process.env, API_INTERNAL_URL: `http://127.0.0.1:${String(apiAddress.port)}`, OPERATOR_TOKEN: operatorToken },
       stdio: ["ignore", "pipe", "pipe"],

@@ -853,3 +853,11 @@ This section is append-only. It records the red/green evidence for the productio
 - RED: the production API server regression now holds an incomplete active HTTP socket open while shutdown begins; shutdown must close that socket and complete, while a repeated close remains safe and signal listeners still return to baseline.
 - GREEN: API shutdown allows a bounded one-second graceful drain, then calls Node's `closeAllConnections()` before closing the database pool. The grace period is validated and injectable only for deterministic tests; production keeps the bounded default. The active-socket test uses 10 ms and proves the connection is destroyed.
 - Focused API/worker tests, lint, typecheck, coverage, syntax, and secret checks pass locally; the replacement CI run will prove the real SSE teardown.
+
+### 2026-08-15 18:59 IST — fix 32 published / fix 33 owned web-process teardown RED/GREEN
+
+- Published fix 32 as `fe147fcc9c6c7d689a5414138f474bc61238dd92` (`fix 32: bound api connection shutdown`). Local, remote-tracking, and advertised `main` matched; the worktree was clean. Full local verification passed 15 files/126 tests, 98.00% statements/lines, 90.06% branches, 93.16% functions, all builds, 13 web checks, 5 Chromium journeys, dependency audit, and tracked-secret audit.
+- GitHub Actions run `31887086546` again passed both real PostgreSQL migration invocations and then remained in the controlled integration step. The harness launched Vinext through `npm run start`; on Linux its shutdown signal targeted the npm wrapper rather than the real server process, allowing the descendant and inherited output pipes to survive teardown.
+- RED: `controlledFullStackStopsTheActualWebProcess` requires the acceptance harness to spawn the Vinext CLI with the current Node executable, avoid the npm wrapper, and await bounded TERM-to-KILL termination of the owned child.
+- GREEN: the harness now owns the actual Vinext process, recognizes both exit codes and signal exits, clears its timeout/listener when shutdown completes, escalates after five seconds, and refuses to finish if even the forced stop does not exit.
+- The focused operations contract, harness syntax check, lint, and strict typecheck pass locally. Full verification and fresh CI remain the publication gates.

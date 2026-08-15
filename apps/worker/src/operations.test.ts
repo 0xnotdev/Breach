@@ -20,6 +20,15 @@ describe("operational product contract", () => {
     expect(manifest.exports?.["./migrations"]).toEqual({ types: "./src/migrations.ts", development: "./src/migrations.ts", import: "./dist/migrations.js" });
   });
 
+  it("controlledFullStackStopsTheActualWebProcess", async () => {
+    const harness = await read("scripts/controlled-full-stack.mjs");
+    expect(harness).toContain("spawn(process.execPath");
+    expect(harness).toContain("vinext/dist/cli.js");
+    expect(harness).not.toContain('spawn(npmCommand, ["run", "start"');
+    expect(harness).toContain('child.kill("SIGKILL")');
+    expect(harness).toContain("await waitForChildExit(child, 5_000)");
+  });
+
   it("declares API, worker, web, and PostgreSQL services with health checks", async () => {
     const compose = await read("compose.yaml");
     for (const service of ["postgres", "migrate", "api", "egress-proxy", "worker", "web"]) expect(compose).toMatch(new RegExp(`\\n  ${service}:`));
