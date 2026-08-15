@@ -9,9 +9,11 @@ interface DiscoveryRow {
   readonly selected_hour: Numeric;
   readonly waiting_for_commit: Numeric;
   readonly commit_detected_hour: Numeric;
+  readonly selected_commit_ready_hour: Numeric;
   readonly failed_hour: Numeric;
   readonly discovery_cursor: Numeric;
   readonly discovery_lag_seconds: Numeric;
+  readonly discovery_to_commit_gate_ms: Numeric;
 }
 
 interface ScanRow {
@@ -22,6 +24,8 @@ interface ScanRow {
   readonly average_files: Numeric;
   readonly p50_latency_ms: Numeric;
   readonly p95_latency_ms: Numeric;
+  readonly commit_detected_to_scan_start_ms: Numeric;
+  readonly average_scan_duration_ms: Numeric;
 }
 
 interface FindingRow {
@@ -33,6 +37,8 @@ interface FindingRow {
   readonly secrets_hour: Numeric;
   readonly dependencies_hour: Numeric;
   readonly config_hour: Numeric;
+  readonly high_confidence_static_paths_hour: Numeric;
+  readonly discovery_to_finding_ms: Numeric;
 }
 
 interface ReviewRow {
@@ -81,36 +87,47 @@ export async function readPostgresSystemMetrics(pool: Pool): Promise<readonly Sy
         COUNT(*) FILTER (WHERE discovered_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour' AND selection_reason = 'selected') AS selected_hour,
         COUNT(*) FILTER (WHERE candidate_state = 'WAITING_FOR_COMMIT') AS waiting_for_commit,
         COUNT(*) FILTER (WHERE first_commit_detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS commit_detected_hour,
+        COUNT(*) FILTER (WHERE discovered_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour' AND selection_reason = 'selected' AND first_commit_detected_at IS NOT NULL) AS selected_commit_ready_hour,
         COUNT(*) FILTER (WHERE discovered_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour' AND candidate_state = 'FAILED') AS failed_hour,
         (SELECT MAX(last_repo_id) FROM discovery_state) AS discovery_cursor,
-        EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - MAX(discovered_at)) AS discovery_lag_seconds
+        EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - MAX(discovered_at)) AS discovery_lag_seconds,
+        AVG(EXTRACT(EPOCH FROM (first_commit_detected_at - discovered_at)) * 1000)
+          FILTER (WHERE first_commit_detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS discovery_to_commit_gate_ms
       FROM repository_candidates`),
     pool.query<ScanRow>(`
       /* breach:system-scans */
       SELECT
-        COUNT(*) FILTER (WHERE started_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS scans_started_hour,
-        COUNT(*) FILTER (WHERE completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS scans_completed_hour,
-        COUNT(*) FILTER (WHERE completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour' AND state = 'PARTIAL') AS partial_hour,
-        AVG((coverage->>'bytesInspected')::double precision) FILTER (WHERE completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS average_bytes,
-        AVG((coverage->>'filesAnalyzed')::double precision) FILTER (WHERE completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS average_files,
-        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - started_at)) * 1000)
-          FILTER (WHERE completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS p50_latency_ms,
-        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - started_at)) * 1000)
-          FILTER (WHERE completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS p95_latency_ms
-      FROM scans`),
+        COUNT(*) FILTER (WHERE s.started_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS scans_started_hour,
+        COUNT(*) FILTER (WHERE s.completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS scans_completed_hour,
+        COUNT(*) FILTER (WHERE s.completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour' AND s.state = 'PARTIAL') AS partial_hour,
+        AVG((s.coverage->>'bytesInspected')::double precision) FILTER (WHERE s.completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS average_bytes,
+        AVG((s.coverage->>'filesAnalyzed')::double precision) FILTER (WHERE s.completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS average_files,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.completed_at - s.started_at)) * 1000)
+          FILTER (WHERE s.completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS p50_latency_ms,
+        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.completed_at - s.started_at)) * 1000)
+          FILTER (WHERE s.completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS p95_latency_ms,
+        AVG(EXTRACT(EPOCH FROM (s.started_at - c.first_commit_detected_at)) * 1000)
+          FILTER (WHERE s.started_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS commit_detected_to_scan_start_ms,
+        AVG(EXTRACT(EPOCH FROM (s.completed_at - s.started_at)) * 1000)
+          FILTER (WHERE s.completed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour') AS average_scan_duration_ms
+      FROM scans s
+      JOIN repository_candidates c ON c.repo_id = s.repo_id`),
     pool.query<FindingRow>(`
       /* breach:system-findings */
       SELECT
         COUNT(*) AS findings_hour,
-        COUNT(*) FILTER (WHERE payload->>'severity' = 'critical') AS critical_hour,
-        COUNT(*) FILTER (WHERE payload->>'severity' = 'high') AS high_hour,
-        COUNT(*) FILTER (WHERE payload->>'severity' = 'medium') AS medium_hour,
-        COUNT(*) FILTER (WHERE payload->>'category' IN ('command_injection','sql_injection','ssrf','path_traversal','code_injection','unsafe_deserialization')) AS exploitability_hour,
-        COUNT(*) FILTER (WHERE payload->>'category' = 'secret_exposure') AS secrets_hour,
-        COUNT(*) FILTER (WHERE payload->>'category' = 'vulnerable_dependency') AS dependencies_hour,
-        COUNT(*) FILTER (WHERE payload->>'category' NOT IN ('command_injection','sql_injection','ssrf','path_traversal','code_injection','unsafe_deserialization','secret_exposure','vulnerable_dependency')) AS config_hour
-      FROM findings
-      WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour'`),
+        COUNT(*) FILTER (WHERE f.payload->>'severity' = 'critical') AS critical_hour,
+        COUNT(*) FILTER (WHERE f.payload->>'severity' = 'high') AS high_hour,
+        COUNT(*) FILTER (WHERE f.payload->>'severity' = 'medium') AS medium_hour,
+        COUNT(*) FILTER (WHERE f.payload->>'category' IN ('command_injection','sql_injection','ssrf','path_traversal','code_injection','unsafe_deserialization')) AS exploitability_hour,
+        COUNT(*) FILTER (WHERE f.payload->>'category' = 'secret_exposure') AS secrets_hour,
+        COUNT(*) FILTER (WHERE f.payload->>'category' = 'vulnerable_dependency') AS dependencies_hour,
+        COUNT(*) FILTER (WHERE f.payload->>'category' NOT IN ('command_injection','sql_injection','ssrf','path_traversal','code_injection','unsafe_deserialization','secret_exposure','vulnerable_dependency')) AS config_hour,
+        COUNT(*) FILTER (WHERE f.payload->'exploitability'->>'level' = 'high_confidence_static_path') AS high_confidence_static_paths_hour,
+        AVG(EXTRACT(EPOCH FROM (f.detected_at - c.discovered_at)) * 1000) AS discovery_to_finding_ms
+      FROM findings f
+      JOIN repository_candidates c ON c.repo_id = f.repo_id
+      WHERE f.detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour'`),
     pool.query<ReviewRow>(`
       /* breach:system-reviews */
       SELECT
@@ -160,6 +177,11 @@ export async function readPostgresSystemMetrics(pool: Pool): Promise<readonly Sy
     add(metrics, "funnel.waiting_for_commit", discovery.waiting_for_commit, "count");
     add(metrics, "funnel.commit_detected_hour", discovery.commit_detected_hour, "count");
     add(metrics, "funnel.failed_hour", discovery.failed_hour, "count");
+    const admissionRatio = ratio(discovery.selected_hour, discovery.repositories_discovered_hour);
+    if (admissionRatio !== null) add(metrics, "funnel.admission_ratio", admissionRatio, "ratio");
+    const commitReadyRatio = ratio(discovery.selected_commit_ready_hour, discovery.selected_hour);
+    if (commitReadyRatio !== null) add(metrics, "funnel.commit_ready_ratio", commitReadyRatio, "ratio");
+    add(metrics, "latency.discovery_to_commit_gate_ms", discovery.discovery_to_commit_gate_ms, "milliseconds");
   }
   if (scans !== undefined) {
     add(metrics, "funnel.scans_started_hour", scans.scans_started_hour, "count");
@@ -170,6 +192,8 @@ export async function readPostgresSystemMetrics(pool: Pool): Promise<readonly Sy
     add(metrics, "scan.average_files", scans.average_files, "count");
     add(metrics, "scan.p50_latency_ms", scans.p50_latency_ms, "milliseconds");
     add(metrics, "scan.p95_latency_ms", scans.p95_latency_ms, "milliseconds");
+    add(metrics, "latency.commit_detected_to_scan_start_ms", scans.commit_detected_to_scan_start_ms, "milliseconds");
+    add(metrics, "latency.scan_duration_ms", scans.average_scan_duration_ms, "milliseconds");
     const partialRate = ratio(scans.partial_hour, scans.scans_completed_hour);
     if (partialRate !== null) add(metrics, "scan.partial_rate", partialRate, "ratio");
   }
@@ -183,6 +207,8 @@ export async function readPostgresSystemMetrics(pool: Pool): Promise<readonly Sy
     add(metrics, "findings.family.secrets_hour", findings.secrets_hour, "count");
     add(metrics, "findings.family.dependencies_hour", findings.dependencies_hour, "count");
     add(metrics, "findings.family.config_hour", findings.config_hour, "count");
+    add(metrics, "findings.high_confidence_static_paths_hour", findings.high_confidence_static_paths_hour, "count");
+    add(metrics, "latency.discovery_to_finding_ms", findings.discovery_to_finding_ms, "milliseconds");
     const scansCompleted = scans === undefined ? null : numeric(scans.scans_completed_hour);
     if (scansCompleted !== null && scansCompleted > 0) add(metrics, "findings.per_1000_scans", (numeric(findings.findings_hour) ?? 0) * 1_000 / scansCompleted, "count_per_1000");
   }

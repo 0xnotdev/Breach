@@ -878,3 +878,11 @@ This section is append-only. It records the red/green evidence for the productio
 - The integration harness correctly observed migration history `[1, 2, 3, 4, 5]`, but its explicit immutable-history assertion still expected the pre-lifecycle schema `[1, 2, 3, 4]` and current version `4`.
 - Updated the controlled full-stack contract to require all five immutable migrations and version `5`; the failing assertion remains a precise guard against missing, reordered, or unapplied production migrations.
 - Local GREEN: harness syntax validation and the complete `npm run verify` gate passed (134 tests, coverage thresholds, all builds, 13 rendered-web checks, 5 Chromium journeys, zero high/critical production dependency vulnerabilities, and 118 tracked files free of credential/canary leakage).
+
+### 2026-08-15 19:25 IST — fix 35 published and CI GREEN / validation-metrics RED/GREEN
+
+- Published fix 35 as `358bd0134ecbf8d547f4a19492cf43592ed02a9c`; local, remote-tracking, and advertised `main` matched. GitHub Actions run `31888377213` completed successfully, including real PostgreSQL migrations, controlled full-stack validation, browser tests, audits, Compose validation, and production image builds.
+- RED: the API contract had no candidate-admission ratio, commit-ready cohort ratio, high-confidence static-path count, or the four required end-to-end latency-stage measurements; the System dashboard source lacked all corresponding operator labels.
+- GREEN: PostgreSQL now derives admission and commit-ready ratios from the discovered-hour cohort, counts sanitized `high_confidence_static_path` payload metadata, and measures discovery-to-gate, commit-to-scan, mean scan-duration, and discovery-to-finding latency. The System dashboard exposes these values only when returned by the authenticated API and retains its explicit `No data yet` state otherwise.
+- Focused API and rendered-web tests pass alongside lint and strict typecheck; full verification remains the publication gate for this checkpoint.
+- Full local GREEN: `npm run verify` passed 15 files/134 tests, 98.25% statements/lines, 90.08% branches, 92.65% functions, all builds, 13 web checks, 5 Chromium journeys, dependency audit, and the 118-file tracked-secret audit.

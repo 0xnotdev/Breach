@@ -29,9 +29,9 @@ describe("operator API runtime", () => {
   it("derives rates and precision only from measured rows", async () => {
     const pool = {
       query: (sql: string) => {
-        if (sql.includes("system-discovery")) return Promise.resolve({ rows: [{ repositories_discovered_hour: "20", eligible_hour: "10", selected_hour: "5", waiting_for_commit: "3", commit_detected_hour: "8", failed_hour: "2", discovery_cursor: "9001", discovery_lag_seconds: "12" }] });
-        if (sql.includes("system-scans")) return Promise.resolve({ rows: [{ scans_started_hour: "9", scans_completed_hour: "8", partial_hour: "2", average_bytes: "2048", average_files: "12.5", p50_latency_ms: "500", p95_latency_ms: "1250" }] });
-        if (sql.includes("system-findings")) return Promise.resolve({ rows: [{ findings_hour: "4", critical_hour: "1", high_hour: "2", medium_hour: "1", exploitability_hour: "2", secrets_hour: "1", dependencies_hour: "1", config_hour: "0" }] });
+        if (sql.includes("system-discovery")) return Promise.resolve({ rows: [{ repositories_discovered_hour: "20", eligible_hour: "10", selected_hour: "5", waiting_for_commit: "3", commit_detected_hour: "4", selected_commit_ready_hour: "4", failed_hour: "2", discovery_cursor: "9001", discovery_lag_seconds: "12", discovery_to_commit_gate_ms: "900" }] });
+        if (sql.includes("system-scans")) return Promise.resolve({ rows: [{ scans_started_hour: "9", scans_completed_hour: "8", partial_hour: "2", average_bytes: "2048", average_files: "12.5", p50_latency_ms: "500", p95_latency_ms: "1250", commit_detected_to_scan_start_ms: "250", average_scan_duration_ms: "750" }] });
+        if (sql.includes("system-findings")) return Promise.resolve({ rows: [{ findings_hour: "4", critical_hour: "1", high_hour: "2", medium_hour: "1", exploitability_hour: "2", secrets_hour: "1", dependencies_hour: "1", config_hour: "0", high_confidence_static_paths_hour: "1", discovery_to_finding_ms: "1800" }] });
         if (sql.includes("system-reviews")) return Promise.resolve({ rows: [{ reviewed: "6", confirmed: "3", false_positive: "1", uncertain: "2", exploitability: "3", secrets: "1", dependencies: "1", config: "1" }] });
         if (sql.includes("system-telemetry")) return Promise.resolve({ rows: [
           { metric_name: "github.requests.total", hour_sum: "80", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
@@ -49,6 +49,13 @@ describe("operator API runtime", () => {
     expect(metrics.get("scan.partial_rate")?.value).toBe(0.25);
     expect(metrics.get("scan.failure_rate")?.value).toBe(0.2);
     expect(metrics.get("findings.per_1000_scans")?.value).toBe(500);
+    expect(metrics.get("funnel.admission_ratio")?.value).toBe(0.25);
+    expect(metrics.get("funnel.commit_ready_ratio")?.value).toBe(0.8);
+    expect(metrics.get("findings.high_confidence_static_paths_hour")?.value).toBe(1);
+    expect(metrics.get("latency.discovery_to_commit_gate_ms")?.value).toBe(900);
+    expect(metrics.get("latency.commit_detected_to_scan_start_ms")?.value).toBe(250);
+    expect(metrics.get("latency.scan_duration_ms")?.value).toBe(750);
+    expect(metrics.get("latency.discovery_to_finding_ms")?.value).toBe(1800);
     expect(metrics.get("github.requests_per_completed_scan")?.value).toBe(5);
     expect(metrics.get("safety.canary.result")?.value).toBe(1);
     expect(metrics.get("safety.canary.last_run")?.value).toBe(1_786_795_200_000);
@@ -58,9 +65,9 @@ describe("operator API runtime", () => {
   it("omits unavailable and denominator-free system measurements", async () => {
     const nullable = {
       repositories_discovered_hour: null, eligible_hour: null, selected_hour: null, waiting_for_commit: null,
-      commit_detected_hour: null, failed_hour: null, discovery_cursor: null, discovery_lag_seconds: "not-a-number",
+      commit_detected_hour: null, selected_commit_ready_hour: null, failed_hour: null, discovery_cursor: null, discovery_lag_seconds: "not-a-number", discovery_to_commit_gate_ms: null,
     };
-    const emptyFindings = { findings_hour: null, critical_hour: null, high_hour: null, medium_hour: null, exploitability_hour: null, secrets_hour: null, dependencies_hour: null, config_hour: null };
+    const emptyFindings = { findings_hour: null, critical_hour: null, high_hour: null, medium_hour: null, exploitability_hour: null, secrets_hour: null, dependencies_hour: null, config_hour: null, high_confidence_static_paths_hour: null, discovery_to_finding_ms: null };
     const emptyReviews = { reviewed: null, confirmed: null, false_positive: null, uncertain: null, exploitability: null, secrets: null, dependencies: null, config: null };
     const pool = {
       query: (sql: string) => {

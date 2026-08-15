@@ -268,6 +268,14 @@ test("renders the live system dashboard boundary", async () => {
 
 test("systemDashboardNeverHardCodesMetrics", async () => {
   const pageSource = await readFile(new URL("app/system/page.tsx", templateRoot), "utf8");
+  const dashboardSource = await readFile(new URL("app/ui/SystemDashboard.tsx", templateRoot), "utf8");
   assert.doesNotMatch(pageSource, /694 repos\/hr|6\.7%|71% remaining|4\.8 \/ scan|p95 48s|82%|0 retention violations/u);
   assert.match(pageSource, /SystemDashboard/u);
+  assert.match(dashboardSource, /Candidate admission ratio/u);
+  assert.match(dashboardSource, /Commit-ready ratio/u);
+  assert.match(dashboardSource, /High-confidence static paths/u);
+  assert.match(dashboardSource, /Discovery to commit gate/u);
+  assert.match(dashboardSource, /Commit detected to scan start/u);
+  assert.match(dashboardSource, /Scan duration/u);
+  assert.match(dashboardSource, /Discovery to finding/u);
 });
