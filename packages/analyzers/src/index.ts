@@ -494,6 +494,16 @@ export interface DependencyFindingDraft {
   path: string;
 }
 
+function sanitizeAdvisorySummary(value: string): string {
+  const withoutMarkup = value.replace(/<[^>]*>/gu, " ");
+  let withoutControls = "";
+  for (let index = 0; index < withoutMarkup.length; index += 1) {
+    const codeUnit = withoutMarkup.charCodeAt(index);
+    withoutControls += codeUnit <= 31 || codeUnit === 127 ? " " : (withoutMarkup[index] ?? "");
+  }
+  return withoutControls.replace(/\s+/gu, " ").trim().slice(0, 280);
+}
+
 export async function correlateOsv(
   dependencies: readonly Dependency[],
   transport: OsvTransport,
@@ -513,13 +523,16 @@ export async function correlateOsv(
       if (dependency === undefined || result?.vulns === undefined) continue;
       for (const vulnerability of result.vulns) {
         if (!vulnerability.id) continue;
+        const summary = vulnerability.summary === undefined
+          ? undefined
+          : sanitizeAdvisorySummary(vulnerability.summary);
         findings.push({
           category: "vulnerable_dependency",
           ecosystem: dependency.ecosystem,
           package: dependency.name,
           version: dependency.version,
           advisoryId: vulnerability.id,
-          ...(vulnerability.summary === undefined ? {} : { summary: vulnerability.summary }),
+          ...(summary === undefined || summary.length === 0 ? {} : { summary }),
           path: dependency.path,
         });
       }
@@ -534,7 +547,25 @@ export interface ConfigurationFindingDraft {
   severity: "critical" | "high" | "medium";
   path: string;
   line: number;
+  rationale: string;
 }
+
+const configurationRationales: Readonly<Record<string, string>> = {
+  "github_actions.pull_request_target": "Untrusted pull-request input may execute with the base repository security context.",
+  "github_actions.write_all_permissions": "Broad workflow-token write permissions increase the impact of workflow compromise.",
+  "github_actions.unpinned_action": "A mutable action reference can change without review and creates a supply-chain risk.",
+  "github_actions.secret_in_shell": "Interpolating a secret into shell text can expose it through expansion, errors, or process metadata.",
+  "docker.secret_in_arg_env": "Build arguments and environment instructions can retain credentials in image metadata or layers.",
+  "docker.download_pipe_shell": "Executing an unverified network response directly as shell code creates a remote-code supply-chain path.",
+  "docker.world_writable": "World-writable files weaken integrity controls inside the image or container.",
+  "docker.root_user": "Running as root increases the privilege and blast radius of an application compromise.",
+  "terraform.public_sensitive_ingress": "Public ingress to a sensitive service port exposes the service to untrusted networks.",
+  "terraform.public_storage": "Public storage configuration can expose or permit modification of hosted data.",
+  "kubernetes.privileged_container": "A privileged container can gain broad host capabilities and substantially increase compromise impact.",
+  "kubernetes.privilege_escalation": "Allowing privilege escalation weakens the container process security boundary.",
+  "tls.verification_disabled": "Disabled certificate verification permits network impersonation and man-in-the-middle attacks.",
+  "cors.wildcard_credentials": "Wildcard cross-origin access combined with credentials can expose authenticated browser data.",
+};
 
 function findLine(lines: readonly string[], predicate: (line: string) => boolean): number {
   const index = lines.findIndex(predicate);
@@ -548,7 +579,9 @@ function addConfigurationFinding(
   severity: ConfigurationFindingDraft["severity"],
   line: number,
 ): void {
-  findings.push({ category: "configuration", ruleId, severity, path, line });
+  const rationale = configurationRationales[ruleId];
+  if (rationale === undefined) throw new Error(`Missing rationale for configuration rule ${ruleId}`);
+  findings.push({ category: "configuration", ruleId, severity, path, line, rationale });
 }
 
 function scanWorkflow(

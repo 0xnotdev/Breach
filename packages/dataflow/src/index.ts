@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { posix as pathPosix } from "node:path";
 import {
   classifyExploitabilityLevel,
   type ExploitabilityLevel,
@@ -87,6 +88,7 @@ interface FunctionModel {
   readonly entryLine?: number;
   readonly entrySourceParams: readonly string[];
   readonly authBarrier: boolean;
+  readonly imports: ReadonlyMap<string, { importedName: string; source: string }>;
 }
 
 interface SinkKind {
@@ -243,6 +245,20 @@ function parseTypeScript(
 ): FunctionModel[] {
   const sourceFile = ts.createSourceFile(path, text, ts.ScriptTarget.ESNext, true, scriptKind(path));
   const functions: FunctionModel[] = [];
+  const imports = new Map<string, { importedName: string; source: string }>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const source = statement.moduleSpecifier.text;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings !== undefined && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        imports.set(element.name.text, {
+          importedName: element.propertyName?.text ?? element.name.text,
+          source,
+        });
+      }
+    }
+  }
   const register = (
     name: string,
     node: ts.FunctionLikeDeclaration,
@@ -268,6 +284,7 @@ function parseTypeScript(
       ...(options.entryLine === undefined ? {} : { entryLine: options.entryLine }),
       entrySourceParams: options.entrySourceParams ?? [],
       authBarrier: options.authBarrier ?? false,
+      imports,
     });
   };
 
@@ -345,6 +362,17 @@ function parsePython(
 ): FunctionModel[] {
   const lines = text.split(/\r?\n/u);
   const functions: FunctionModel[] = [];
+  const imports = new Map<string, { importedName: string; source: string }>();
+  for (const line of lines) {
+    const imported = /^\s*from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+(.+)$/u.exec(line);
+    if (imported?.[1] === undefined || imported[2] === undefined) continue;
+    for (const item of imported[2].split(",")) {
+      const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/u.exec(item);
+      if (match?.[1] !== undefined) {
+        imports.set(match[2] ?? match[1], { importedName: match[1], source: imported[1] });
+      }
+    }
+  }
   let decorators: Array<{ text: string; line: number }> = [];
   for (let index = 0; index < lines.length; index += 1) {
     if (nodeCounter.value >= maxNodes) break;
@@ -354,7 +382,7 @@ function parsePython(
       decorators.push({ text: line.trim(), line: index + 1 });
       continue;
     }
-    const definition = /^(\s*)def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:/u.exec(line);
+    const definition = /^(\s*)(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:/u.exec(line);
     if (definition === null || definition[2] === undefined) {
       if (line.trim().length > 0) decorators = [];
       continue;
@@ -432,6 +460,7 @@ function parsePython(
       ...(routeDecorator === undefined ? {} : { entryLine: routeDecorator.line }),
       entrySourceParams: entryPoint === undefined ? [] : params,
       authBarrier: decorators.some((decorator) => /auth|login|required|permission/iu.test(decorator.text)),
+      imports,
     });
     decorators = [];
     index = end - 1;
@@ -513,6 +542,38 @@ function initialState(model: FunctionModel): TraversalState {
   };
 }
 
+function moduleStem(path: string): string {
+  const normalized = path.replaceAll("\\", "/").replace(/\.(?:jsx?|tsx?|py)$/u, "");
+  return normalized.endsWith("/index") ? normalized.slice(0, -"/index".length) : normalized;
+}
+
+function resolveImportedFile(callerFile: string, source: string, candidateFile: string): boolean {
+  const candidate = moduleStem(candidateFile);
+  const callerDirectory = pathPosix.dirname(callerFile.replaceAll("\\", "/"));
+  if (source.startsWith(".")) {
+    return candidate === pathPosix.normalize(pathPosix.join(callerDirectory, source));
+  }
+  const pythonSource = source.replaceAll(".", "/");
+  return candidate === pythonSource || candidate === pathPosix.join(callerDirectory, pythonSource);
+}
+
+function resolveTarget(
+  caller: FunctionModel,
+  targetName: string,
+  models: readonly FunctionModel[],
+): FunctionModel | undefined {
+  const local = models.filter((model) => model.file === caller.file && model.name === targetName);
+  if (local.length === 1) return local[0];
+  const imported = caller.imports.get(targetName);
+  if (imported === undefined) return undefined;
+  const matches = models.filter(
+    (model) =>
+      model.name === imported.importedName &&
+      resolveImportedFile(caller.file, imported.source, model.file),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export class PassiveExploitabilityAnalyzer {
   readonly #budgets: DataflowBudgets;
 
@@ -549,8 +610,6 @@ export class PassiveExploitabilityAnalyzer {
       }
     }
 
-    const byName = new Map<string, FunctionModel>();
-    for (const model of models) if (!byName.has(model.name)) byName.set(model.name, model);
     const queue = models.filter((model) => model.entryPoint !== undefined).map(initialState);
     const findings: AttackPathFinding[] = [];
     const surfacedSinks = new Set<string>();
@@ -629,7 +688,7 @@ export class PassiveExploitabilityAnalyzer {
           }
           continue;
         }
-        const target = byName.get(call.target);
+        const target = resolveTarget(state.model, call.target, models);
         if (target === undefined || state.depth >= this.#budgets.maxDepth) {
           if (target !== undefined && !reasons.includes("graph_depth_limit")) reasons.push("graph_depth_limit");
           continue;

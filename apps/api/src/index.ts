@@ -57,7 +57,7 @@ export function createDemoDataSource(): OperatorDataSource {
     repository: { id: 1, fullName: "fixture/canary", url: "https://github.com/fixture/canary" }, revision: { ref: "HEAD", sha: "a".repeat(40) },
     category: "secret_exposure", severity: "critical", confidence: .98,
     secretEvidence: { type: "AWS Secret Access Key", provider: "AWS", path: "credential.txt", line: 1, fingerprint: "f".repeat(64) },
-    coverage: { ref: `HEAD@${"a".repeat(40)}`, historyScanned: false, scanComplete: true, filesSeen: 1, filesAnalyzed: 1, bytesInspected: 64, skippedBinary: 0, skippedOversize: 0, skippedBudget: 0, treeTruncated: false, languagesModeled: [] }, reviewState: "UNREVIEWED",
+    coverage: { ref: `HEAD@${"a".repeat(40)}`, historyScanned: false, scanComplete: true, snapshotComplete: true, analysisComplete: true, analysisPartial: false, snapshotPartialReasons: [], analysisPartialReasons: [], filesSeen: 1, filesEligible: 1, filesAnalyzed: 1, bytesInspected: 64, skippedBinary: 0, skippedGenerated: 0, skippedOversize: 0, skippedBudget: 0, skippedUnsupported: 0, treeTruncated: false, languagesModeled: [] }, reviewState: "UNREVIEWED",
   };
   let current = finding;
   return {

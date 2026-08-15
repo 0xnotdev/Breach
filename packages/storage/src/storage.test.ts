@@ -195,6 +195,18 @@ describe("metadata persistence seam", () => {
     await expect(
       store.saveFinding(unsafeFinding),
     ).rejects.toThrow();
+
+    const dependencyFinding = {
+      ...safeFinding,
+      findingId: randomUUID(),
+      category: "vulnerable_dependency",
+      severity: "high" as const,
+      confidence: 1,
+      dependencyEvidence: { ecosystem: "npm", packageName: "lodash", version: "4.17.20", advisoryId: "GHSA-FAKE-1234", manifestPath: "package-lock.json" },
+      secretEvidence: undefined,
+    } as unknown as Parameters<MetadataStore["saveFinding"]>[0];
+    await store.saveFinding(dependencyFinding);
+    await expect(store.getFinding(dependencyFinding.findingId)).resolves.toMatchObject({ dependencyEvidence: { packageName: "lodash", advisoryId: "GHSA-FAKE-1234" } });
   });
 
   it("stores only validation review states and non-sensitive notes", async () => {
@@ -242,12 +254,20 @@ describe("metadata persistence seam", () => {
       ref: `HEAD@${headSha}`,
       historyScanned: false as const,
       scanComplete: true,
+      snapshotComplete: true,
+      analysisComplete: true,
+      analysisPartial: false,
+      snapshotPartialReasons: [],
+      analysisPartialReasons: [],
       filesSeen: 2,
+      filesEligible: 2,
       filesAnalyzed: 2,
       bytesInspected: 42,
       skippedBinary: 0,
+      skippedGenerated: 0,
       skippedOversize: 0,
       skippedBudget: 0,
+      skippedUnsupported: 0,
       treeTruncated: false,
       languagesModeled: ["typescript" as const],
     };

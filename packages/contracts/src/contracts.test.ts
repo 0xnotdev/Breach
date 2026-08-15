@@ -53,16 +53,40 @@ describe("public metadata contracts", () => {
     expect(() => sanitizedFindingSchema.parse(unsafe)).toThrow();
   });
 
+  it("bounds dependency and configuration evidence without accepting snippets", () => {
+    const base = {
+      findingId: "018f47d5-8eb7-7a32-a20b-6f7f4af90d46",
+      detectedAt: "2026-08-15T10:00:00.000Z",
+      repository: { id: 2, fullName: "fixture/evidence", url: "https://github.com/fixture/evidence" },
+      revision: { ref: "HEAD", sha: "b".repeat(40) },
+      severity: "high",
+      confidence: 1,
+      reviewState: "UNREVIEWED",
+    };
+    expect(sanitizedFindingSchema.parse({ ...base, category: "vulnerable_dependency", dependencyEvidence: { ecosystem: "npm", packageName: "lodash", version: "4.17.20", advisoryId: "GHSA-FAKE", manifestPath: "package-lock.json" } })).toHaveProperty("dependencyEvidence.packageName", "lodash");
+    expect(sanitizedFindingSchema.parse({ ...base, category: "configuration", configEvidence: { ruleId: "docker.root_user", path: "Dockerfile", line: 2, rationale: "Root execution increases compromise impact.", staticOnly: true } })).toHaveProperty("configEvidence.staticOnly", true);
+    expect(() => sanitizedFindingSchema.parse({ ...base, category: "configuration", configEvidence: { ruleId: "docker.root_user", path: "Dockerfile", line: 2, rationale: "x", staticOnly: true, snippet: "USER root" } })).toThrow();
+    expect(() => sanitizedFindingSchema.parse({ ...base, category: "vulnerable_dependency", dependencyEvidence: { ecosystem: "npm", packageName: "x", version: "1.0.0", advisoryId: "A", manifestPath: "package-lock.json", advisorySummary: "x".repeat(281) } })).toThrow();
+  });
+
   it("represents honest partial HEAD-only coverage", () => {
     const coverage = coverageSchema.parse({
       ref: "main@abc123",
       historyScanned: false,
       scanComplete: false,
+      snapshotComplete: false,
+      analysisComplete: true,
+      analysisPartial: false,
+      snapshotPartialReasons: ["tree_truncated", "binary_files_excluded", "oversized_files_excluded"],
+      analysisPartialReasons: [],
       filesSeen: 381,
+      filesEligible: 275,
       filesAnalyzed: 224,
       bytesInspected: 2_817_734,
       skippedBinary: 102,
+      skippedGenerated: 0,
       skippedOversize: 4,
+      skippedUnsupported: 0,
       treeTruncated: true,
       languagesModeled: ["typescript"],
     });

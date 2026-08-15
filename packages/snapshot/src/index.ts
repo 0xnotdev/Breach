@@ -1,4 +1,8 @@
-import { coverageSchema, type Coverage } from "@breach/contracts";
+import {
+  coverageSchema,
+  type Coverage,
+  type SnapshotPartialReason,
+} from "@breach/contracts";
 import {
   assertValidScanPermit,
   type AsyncSerialDispatcher,
@@ -119,13 +123,15 @@ function isUnsafePath(path: string): boolean {
   );
 }
 
-function isGeneratedOrBinary(path: string): boolean {
+function isBinaryPath(path: string): boolean {
   const lower = path.toLocaleLowerCase("en-US");
-  return (
-    binarySuffixes.some((suffix) => lower.endsWith(suffix)) ||
-    /(^|\/)(?:node_modules|vendor|dist|build|coverage|\.next|\.git)(?:\/|$)/u.test(lower) ||
-    /(?:\.min\.js|\.map)$/u.test(lower)
-  );
+  return binarySuffixes.some((suffix) => lower.endsWith(suffix));
+}
+
+function isGeneratedPath(path: string): boolean {
+  const lower = path.toLocaleLowerCase("en-US");
+  return /(^|\/)(?:node_modules|vendor|dist|build|coverage|\.next|\.git)(?:\/|$)/u.test(lower) ||
+    /(?:\.min\.js|\.map)$/u.test(lower);
 }
 
 function priorityFor(path: string): number {
@@ -276,13 +282,24 @@ export class SnapshotReader {
       }
     }
     let skippedBinary = 0;
+    let skippedGenerated = 0;
     let skippedOversize = 0;
     let skippedBudget = 0;
+    let skippedUnsupported = 0;
+    const budgetReasons = new Set<SnapshotPartialReason>();
     const candidates: Array<TreeBlob & { priority: number }> = [];
 
     for (const blob of discoveredBlobs) {
-      if (isUnsafePath(blob.path) || isGeneratedOrBinary(blob.path)) {
+      if (isUnsafePath(blob.path)) {
+        skippedUnsupported += 1;
+        continue;
+      }
+      if (isBinaryPath(blob.path)) {
         skippedBinary += 1;
+        continue;
+      }
+      if (isGeneratedPath(blob.path)) {
+        skippedGenerated += 1;
         continue;
       }
       if (blob.size > this.#budgets.maxFileBytes) {
@@ -291,17 +308,25 @@ export class SnapshotReader {
       }
       const priority = priorityFor(blob.path);
       if (priority > 0) candidates.push({ ...blob, priority });
+      else skippedUnsupported += 1;
     }
     candidates.sort((left, right) => right.priority - left.priority || left.path.localeCompare(right.path));
 
     const files: EphemeralFile[] = [];
     let bytesInspected = 0;
     for (const candidate of candidates) {
-      if (
-        files.length >= this.#budgets.maxFiles ||
-        bytesInspected + candidate.size > this.#budgets.maxRepoBytes ||
-        this.#nowMs() - startedAt >= this.#budgets.wallClockMs
-      ) {
+      if (files.length >= this.#budgets.maxFiles) {
+        budgetReasons.add("file_count_budget_exhausted");
+        skippedBudget += 1;
+        continue;
+      }
+      if (bytesInspected + candidate.size > this.#budgets.maxRepoBytes) {
+        budgetReasons.add("repository_byte_budget_exhausted");
+        skippedBudget += 1;
+        continue;
+      }
+      if (this.#nowMs() - startedAt >= this.#budgets.wallClockMs) {
+        budgetReasons.add("wall_clock_budget_exhausted");
         skippedBudget += 1;
         continue;
       }
@@ -344,22 +369,33 @@ export class SnapshotReader {
       bytesInspected += actualBytes;
     }
 
-    const scanComplete =
-      !tree.truncated &&
-      skippedBinary === 0 &&
-      skippedOversize === 0 &&
-      skippedBudget === 0 &&
-      files.length === discoveredBlobs.length;
+    const snapshotPartialReasons: SnapshotPartialReason[] = [
+      ...(tree.truncated ? ["tree_truncated" as const] : []),
+      ...(skippedBinary > 0 ? ["binary_files_excluded" as const] : []),
+      ...(skippedGenerated > 0 ? ["generated_files_excluded" as const] : []),
+      ...(skippedOversize > 0 ? ["oversized_files_excluded" as const] : []),
+      ...(skippedUnsupported > 0 ? ["unsupported_files_excluded" as const] : []),
+      ...budgetReasons,
+    ];
+    const snapshotComplete = snapshotPartialReasons.length === 0;
     const coverage = coverageSchema.parse({
       ref: `HEAD@${permit.headSha}`,
       historyScanned: false,
-      scanComplete,
+      scanComplete: snapshotComplete,
+      snapshotComplete,
+      analysisComplete: true,
+      analysisPartial: false,
+      snapshotPartialReasons,
+      analysisPartialReasons: [],
       filesSeen: discoveredBlobs.length,
+      filesEligible: candidates.length,
       filesAnalyzed: files.length,
       bytesInspected,
       skippedBinary,
+      skippedGenerated,
       skippedOversize,
       skippedBudget,
+      skippedUnsupported,
       treeTruncated: tree.truncated,
       languagesModeled: modeledLanguages(files),
     });

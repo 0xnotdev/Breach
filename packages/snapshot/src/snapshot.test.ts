@@ -106,13 +106,21 @@ describe("bounded committed-HEAD inspection", () => {
     expect(snapshot.coverage).toMatchObject({
       historyScanned: false,
       scanComplete: false,
+      snapshotComplete: false,
+      analysisComplete: true,
       filesSeen: 6,
+      filesEligible: 3,
       filesAnalyzed: 2,
       bytesInspected: 13,
-      skippedBinary: 2,
+      skippedBinary: 1,
+      skippedGenerated: 1,
       skippedOversize: 1,
       skippedBudget: 1,
+      skippedUnsupported: 0,
       treeTruncated: false,
+      snapshotPartialReasons: ["binary_files_excluded", "generated_files_excluded", "oversized_files_excluded", "file_count_budget_exhausted"],
+      analysisPartial: false,
+      analysisPartialReasons: [],
     });
     expect(blobs.requests).toEqual([
       `${blobRoot}${"2".repeat(40)}`,
@@ -263,7 +271,8 @@ describe("bounded committed-HEAD inspection", () => {
     expect(snapshot.files.map((file) => file.path)).toEqual(["script.js", "view.tsx", "worker.py"]);
     expect(snapshot.coverage.languagesModeled).toEqual(["javascript", "typescript", "python"]);
     expect(snapshot.coverage.filesSeen).toBe(4);
-    expect(snapshot.coverage.skippedBinary).toBe(1);
+    expect(snapshot.coverage.skippedBinary).toBe(0);
+    expect(snapshot.coverage.skippedUnsupported).toBe(1);
   });
 
   it("bounds truncated subtree fallbacks by status and elapsed time", async () => {

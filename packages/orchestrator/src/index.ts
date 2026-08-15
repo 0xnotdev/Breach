@@ -8,6 +8,7 @@ import {
   type SecretScanner,
 } from "@breach/analyzers";
 import {
+  coverageSchema,
   sanitizedFindingSchema,
   type CandidateState,
   type Coverage,
@@ -106,8 +107,17 @@ async function createFindings(
   osv: OsvTransport,
   dataflow: DataflowAccess,
   detectedAt: string,
-): Promise<{ findings: SanitizedFinding[]; analysisPartial: boolean }> {
+): Promise<{ findings: SanitizedFinding[]; coverage: Coverage }> {
   const findings: SanitizedFinding[] = [];
+  const paths = dataflow.analyze(snapshot.files);
+  const analysisComplete = !paths.diagnostics.partial;
+  const coverage = coverageSchema.parse({
+    ...snapshot.coverage,
+    scanComplete: snapshot.coverage.snapshotComplete && analysisComplete,
+    analysisComplete,
+    analysisPartial: !analysisComplete,
+    analysisPartialReasons: paths.diagnostics.reasons,
+  });
   const secrets = secretScanner.scan(snapshot.files);
   for (const secret of secrets) {
     findings.push(
@@ -117,7 +127,7 @@ async function createFindings(
           permit,
           detectedAt,
           `secret:${secret.ruleId}:${secret.path}:${String(secret.line)}:${secret.fingerprint}`,
-          snapshot.coverage,
+          coverage,
         ),
         category: "secret_exposure",
         cwe: "CWE-798",
@@ -144,11 +154,19 @@ async function createFindings(
           permit,
           detectedAt,
           `dependency:${dependency.ecosystem}:${dependency.package}:${dependency.version}:${dependency.advisoryId}`,
-          snapshot.coverage,
+          coverage,
         ),
         category: "vulnerable_dependency",
         severity: "high",
         confidence: 1,
+        dependencyEvidence: {
+          ecosystem: dependency.ecosystem,
+          packageName: dependency.package,
+          version: dependency.version,
+          advisoryId: dependency.advisoryId,
+          manifestPath: dependency.path,
+          ...(dependency.summary === undefined ? {} : { advisorySummary: dependency.summary }),
+        },
       }),
     );
   }
@@ -162,11 +180,18 @@ async function createFindings(
           permit,
           detectedAt,
           `configuration:${configuration.ruleId}:${configuration.path}:${String(configuration.line)}`,
-          snapshot.coverage,
+          coverage,
         ),
         category: "configuration",
         severity: configuration.severity,
         confidence: 0.9,
+        configEvidence: {
+          ruleId: configuration.ruleId,
+          path: configuration.path,
+          line: configuration.line,
+          rationale: configuration.rationale,
+          staticOnly: true,
+        },
         path: [
           {
             file: configuration.path,
@@ -179,7 +204,6 @@ async function createFindings(
     );
   }
 
-  const paths = dataflow.analyze(snapshot.files);
   for (const path of paths.findings) {
     findings.push(
       sanitizedFindingSchema.parse({
@@ -188,7 +212,7 @@ async function createFindings(
           permit,
           detectedAt,
           `path:${path.category}:${path.path.map((node) => `${node.file}:${String(node.line)}:${node.role}`).join("|")}`,
-          snapshot.coverage,
+          coverage,
         ),
         category: path.category,
         cwe: path.cwe,
@@ -209,7 +233,7 @@ async function createFindings(
       }),
     );
   }
-  return { findings, analysisPartial: paths.diagnostics.partial };
+  return { findings, coverage };
 }
 
 export class ScanOrchestrator {
@@ -275,13 +299,13 @@ export class ScanOrchestrator {
         this.#dataflow,
         this.#now().toISOString(),
       );
-      const coverage = snapshot.coverage;
+      const coverage = created.coverage;
       snapshot.release();
       snapshot = null;
 
       await this.#store.saveFindings(created.findings);
       const state: "SCANNED_NO_FINDINGS" | "SCANNED_FINDINGS" | "PARTIAL" =
-        !coverage.scanComplete || created.analysisPartial
+        !coverage.scanComplete
           ? "PARTIAL"
           : created.findings.length > 0
             ? "SCANNED_FINDINGS"

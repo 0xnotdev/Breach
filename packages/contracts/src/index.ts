@@ -31,6 +31,24 @@ export const exploitabilityLevelSchema = z.enum([
   "high_confidence_static_path",
 ]);
 
+export const snapshotPartialReasonSchema = z.enum([
+  "tree_truncated",
+  "binary_files_excluded",
+  "generated_files_excluded",
+  "oversized_files_excluded",
+  "unsupported_files_excluded",
+  "file_count_budget_exhausted",
+  "repository_byte_budget_exhausted",
+  "wall_clock_budget_exhausted",
+]);
+
+export const analysisPartialReasonSchema = z.enum([
+  "file_limit",
+  "timeout",
+  "graph_node_limit",
+  "graph_depth_limit",
+]);
+
 export type ExploitabilityLevel = z.infer<typeof exploitabilityLevelSchema>;
 
 export function classifyExploitabilityLevel(score: number): ExploitabilityLevel {
@@ -49,19 +67,39 @@ export const coverageSchema = z
     ref: z.string().min(1).max(255),
     historyScanned: z.literal(false),
     scanComplete: z.boolean(),
+    snapshotComplete: z.boolean(),
+    analysisComplete: z.boolean(),
+    analysisPartial: z.boolean(),
+    snapshotPartialReasons: z.array(snapshotPartialReasonSchema),
+    analysisPartialReasons: z.array(analysisPartialReasonSchema),
     filesSeen: z.number().int().nonnegative(),
+    filesEligible: z.number().int().nonnegative(),
     filesAnalyzed: z.number().int().nonnegative(),
     bytesInspected: z.number().int().nonnegative(),
     skippedBinary: z.number().int().nonnegative(),
+    skippedGenerated: z.number().int().nonnegative(),
     skippedOversize: z.number().int().nonnegative(),
     skippedBudget: z.number().int().nonnegative().default(0),
+    skippedUnsupported: z.number().int().nonnegative(),
     treeTruncated: z.boolean(),
     languagesModeled: z.array(z.enum(["javascript", "typescript", "python"])),
   })
   .strict()
-  .refine((value) => value.filesAnalyzed <= value.filesSeen, {
-    message: "Analyzed file count cannot exceed files seen",
+  .refine((value) => value.filesEligible <= value.filesSeen, {
+    message: "Eligible file count cannot exceed files seen",
+    path: ["filesEligible"],
+  })
+  .refine((value) => value.filesAnalyzed <= value.filesEligible, {
+    message: "Analyzed file count cannot exceed eligible files",
     path: ["filesAnalyzed"],
+  })
+  .refine((value) => value.analysisPartial === !value.analysisComplete, {
+    message: "Analysis partial flag must match analysis completeness",
+    path: ["analysisPartial"],
+  })
+  .refine((value) => value.scanComplete === (value.snapshotComplete && value.analysisComplete), {
+    message: "Scan completeness must combine snapshot and analysis completeness",
+    path: ["scanComplete"],
   });
 
 export const exploitabilitySchema = z
@@ -98,6 +136,27 @@ export const secretEvidenceSchema = z
   })
   .strict();
 
+export const dependencyEvidenceSchema = z
+  .object({
+    ecosystem: z.string().min(1).max(64),
+    packageName: z.string().min(1).max(255),
+    version: z.string().min(1).max(128),
+    advisoryId: z.string().min(1).max(160),
+    manifestPath: z.string().min(1).max(1_024),
+    advisorySummary: z.string().min(1).max(280).optional(),
+  })
+  .strict();
+
+export const configEvidenceSchema = z
+  .object({
+    ruleId: z.string().regex(/^[a-z][a-z0-9_.]*$/u).max(160),
+    path: z.string().min(1).max(1_024),
+    line: z.number().int().positive(),
+    rationale: z.string().min(1).max(280),
+    staticOnly: z.literal(true),
+  })
+  .strict();
+
 export const sanitizedFindingSchema = z
   .object({
     findingId: z.uuid(),
@@ -122,6 +181,8 @@ export const sanitizedFindingSchema = z
     exploitability: exploitabilitySchema.optional(),
     coverage: coverageSchema.optional(),
     secretEvidence: secretEvidenceSchema.optional(),
+    dependencyEvidence: dependencyEvidenceSchema.optional(),
+    configEvidence: configEvidenceSchema.optional(),
     path: z.array(semanticPathNodeSchema).max(256).optional(),
     reviewState: reviewStateSchema.default("UNREVIEWED"),
   })
@@ -130,6 +191,8 @@ export const sanitizedFindingSchema = z
 export type CandidateState = z.infer<typeof candidateStateSchema>;
 export type CandidateSelectionReason = z.infer<typeof candidateSelectionReasonSchema>;
 export type Coverage = z.infer<typeof coverageSchema>;
+export type AnalysisPartialReason = z.infer<typeof analysisPartialReasonSchema>;
+export type SnapshotPartialReason = z.infer<typeof snapshotPartialReasonSchema>;
 export type Exploitability = z.infer<typeof exploitabilitySchema>;
 export type ReviewState = z.infer<typeof reviewStateSchema>;
 export type SanitizedFinding = z.infer<typeof sanitizedFindingSchema>;

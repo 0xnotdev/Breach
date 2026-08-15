@@ -8,11 +8,11 @@ describe("bounded passive exploitability analysis", () => {
     const result = new PassiveExploitabilityAnalyzer().analyze([
       file(
         "routes/render.ts",
-        'router.post("/render", (req, res) => renderController(req.body.filename));',
+        'import { renderController } from "../controllers/render";\nrouter.post("/render", (req, res) => renderController(req.body.filename));',
       ),
       file(
         "controllers/render.ts",
-        "export function renderController(filename: string) { return render(filename); }",
+        'import { render } from "../services/image";\nexport function renderController(filename: string) { return render(filename); }',
       ),
       file(
         "services/image.ts",
@@ -50,7 +50,7 @@ describe("bounded passive exploitability analysis", () => {
     const result = new PassiveExploitabilityAnalyzer().analyze([
       file(
         "app.py",
-        '@app.get("/fetch")\ndef fetch(url: str):\n    return download(url)\n',
+        'from client import download\n@app.get("/fetch")\ndef fetch(url: str):\n    return download(url)\n',
       ),
       file("client.py", "def download(url):\n    return requests.get(url)\n"),
     ]);
@@ -64,6 +64,25 @@ describe("bounded passive exploitability analysis", () => {
       entryPoint: "GET /fetch",
       completeDataflowObserved: true,
     });
+  });
+
+  it("does not connect unrelated functions that share a symbol name", () => {
+    const result = new PassiveExploitabilityAnalyzer().analyze([
+      file("routes/run.ts", 'router.post("/run", (req, res) => run(req.body.command));'),
+      file("admin/run.ts", "export function run(command: string) { return exec(command); }"),
+      file("jobs/run.ts", "export function run(command: string) { return exec(command); }"),
+    ]);
+
+    expect(result.findings.filter((finding) => finding.completeDataflowObserved)).toEqual([]);
+    expect(result.findings.filter((finding) => finding.level === "possible")).toHaveLength(2);
+  });
+
+  it("models async FastAPI handlers without executing Python", () => {
+    const result = new PassiveExploitabilityAnalyzer().analyze([
+      file("app.py", '@app.post("/fetch")\nasync def fetch(url: str):\n    return requests.get(url)\n'),
+    ]);
+
+    expect(result.findings).toContainEqual(expect.objectContaining({ category: "ssrf", entryPoint: "POST /fetch", completeDataflowObserved: true }));
   });
 
   it("downranks a same-function path with sanitizer and authentication barriers", () => {
@@ -147,6 +166,18 @@ describe("bounded passive exploitability analysis", () => {
       entryPoint: "POST /fetch",
       level: "high_confidence_static_path",
     });
+  });
+
+  it("models Next form-data and URL search-parameter sources", () => {
+    const form = new PassiveExploitabilityAnalyzer().analyze([
+      file("app/api/run/route.ts", 'export async function POST(request: Request) { const data = await request.formData(); return exec(data.get("command")); }'),
+    ]);
+    const query = new PassiveExploitabilityAnalyzer().analyze([
+      file("app/api/fetch/route.ts", 'export function GET(request: Request) { const url = new URL(request.url); return fetch(url.searchParams.get("target")); }'),
+    ]);
+
+    expect(form.findings).toContainEqual(expect.objectContaining({ category: "command_injection", completeDataflowObserved: true }));
+    expect(query.findings).toContainEqual(expect.objectContaining({ category: "ssrf", completeDataflowObserved: true }));
   });
 
   it("classifies SQL, dynamic-code, and unsafe-deserialization sinks", () => {

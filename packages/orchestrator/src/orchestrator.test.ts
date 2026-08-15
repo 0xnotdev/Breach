@@ -17,12 +17,20 @@ const completeCoverage: Coverage = {
   ref: `HEAD@${"a".repeat(40)}`,
   historyScanned: false,
   scanComplete: true,
+  snapshotComplete: true,
+  analysisComplete: true,
+  analysisPartial: false,
+  snapshotPartialReasons: [],
+  analysisPartialReasons: [],
   filesSeen: 3,
+  filesEligible: 3,
   filesAnalyzed: 3,
   bytesInspected: 128,
   skippedBinary: 0,
+  skippedGenerated: 0,
   skippedOversize: 0,
   skippedBudget: 0,
+  skippedUnsupported: 0,
   treeTruncated: false,
   languagesModeled: ["typescript"],
 };
@@ -138,7 +146,7 @@ describe("scan orchestration lifecycle", () => {
 
   it("records a complete scan with no findings", async () => {
     const store = new MemoryLifecycleStore();
-    const emptyCoverage = { ...completeCoverage, filesSeen: 0, filesAnalyzed: 0, bytesInspected: 0, languagesModeled: [] };
+    const emptyCoverage = { ...completeCoverage, filesSeen: 0, filesEligible: 0, filesAnalyzed: 0, bytesInspected: 0, languagesModeled: [] };
     const orchestrator = new ScanOrchestrator({ gate: readyGate, snapshots: { read: () => Promise.resolve({ files: [], coverage: emptyCoverage, release() {} }) }, store, secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"), osv, dataflow: new PassiveExploitabilityAnalyzer() });
     await expect(orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 })).resolves.toMatchObject({ kind: "scanned", state: "SCANNED_NO_FINDINGS", findingCount: 0 });
   });
@@ -169,6 +177,30 @@ describe("scan orchestration lifecycle", () => {
     expect(persisted).not.toContain(fakeSecret);
     expect(persisted).not.toContain("router.post");
     expect(store.metrics.map((metric) => metric.name)).toContain("scan.completed");
+  });
+
+  it("realDependencyEvidenceSurvivesToAPI", async () => {
+    const store = new MemoryLifecycleStore();
+    const orchestrator = new ScanOrchestrator({ gate: readyGate, snapshots: { read: () => Promise.resolve(new FakeSnapshot()) }, store, secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"), osv, dataflow: new PassiveExploitabilityAnalyzer() });
+
+    await orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 });
+    const dependency = store.findings.find((finding) => finding.category === "vulnerable_dependency");
+    expect(dependency?.dependencyEvidence).toEqual({ ecosystem: "npm", packageName: "fixture", version: "1.0.0", advisoryId: "OSV-FAKE-1", manifestPath: "package-lock.json" });
+    expect(JSON.stringify(dependency)).not.toContain("node_modules/fixture");
+  });
+
+  it("preserves bounded configuration evidence without the matched line", async () => {
+    const store = new MemoryLifecycleStore();
+    const dockerfile = bytes("FROM node:24\nUSER root\n");
+    const snapshot = new FakeSnapshot();
+    snapshot.files.splice(0, snapshot.files.length, { path: "Dockerfile", bytes: dockerfile });
+    const orchestrator = new ScanOrchestrator({ gate: readyGate, snapshots: { read: () => Promise.resolve(snapshot) }, store, secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"), osv: { queryBatch: () => Promise.resolve({ results: [] }) }, dataflow: new PassiveExploitabilityAnalyzer() });
+
+    await orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 });
+    const configuration = store.findings.find((finding) => finding.category === "configuration");
+    expect(configuration?.configEvidence).toMatchObject({ ruleId: "docker.root_user", path: "Dockerfile", line: 2, staticOnly: true });
+    expect(configuration?.configEvidence?.rationale).toMatch(/privilege/iu);
+    expect(JSON.stringify(configuration)).not.toContain("USER root");
   });
 
   it("parks an empty repository without touching snapshot access", async () => {
@@ -238,7 +270,7 @@ describe("scan orchestration lifecycle", () => {
 
   it("keeps a budget-limited scan in the PARTIAL state even when findings exist", async () => {
     const store = new MemoryLifecycleStore();
-    const snapshot = new FakeSnapshot({ ...completeCoverage, scanComplete: false, skippedOversize: 1 });
+    const snapshot = new FakeSnapshot({ ...completeCoverage, scanComplete: false, snapshotComplete: false, skippedOversize: 1, snapshotPartialReasons: ["oversized_files_excluded"] });
     const orchestrator = new ScanOrchestrator({
       gate: readyGate,
       snapshots: { read: () => Promise.resolve(snapshot) },
@@ -252,5 +284,21 @@ describe("scan orchestration lifecycle", () => {
       orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 }),
     ).resolves.toMatchObject({ kind: "scanned", state: "PARTIAL" });
     expect(store.completion?.state).toBe("PARTIAL");
+  });
+
+  it("keeps snapshot and analysis completeness separate", async () => {
+    const store = new MemoryLifecycleStore();
+    const snapshot = new FakeSnapshot();
+    const orchestrator = new ScanOrchestrator({
+      gate: readyGate,
+      snapshots: { read: () => Promise.resolve(snapshot) },
+      store,
+      secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"),
+      osv: { queryBatch: ({ queries }) => Promise.resolve({ results: queries.map(() => ({})) }) },
+      dataflow: { analyze: () => ({ findings: [], diagnostics: { filesParsed: 1, graphNodes: 10, partial: true, reasons: ["graph_node_limit"] } }) },
+    });
+
+    await expect(orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 })).resolves.toMatchObject({ kind: "scanned", state: "PARTIAL" });
+    expect(store.completion?.coverage).toMatchObject({ snapshotComplete: true, analysisComplete: false, analysisPartial: true, analysisPartialReasons: ["graph_node_limit"], scanComplete: false });
   });
 });
