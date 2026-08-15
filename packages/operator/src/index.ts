@@ -108,6 +108,20 @@ function matchesFilters(finding: SanitizedFinding, search: URLSearchParams): boo
   return true;
 }
 
+function findingPage(search: URLSearchParams): { limit: number; offset: number } | null {
+  const parse = (name: "limit" | "offset", fallback: number, minimum: number, maximum: number) => {
+    const values = search.getAll(name);
+    if (values.length === 0) return fallback;
+    const value = values[0];
+    if (values.length !== 1 || value === undefined || !/^\d+$/u.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
+  };
+  const limit = parse("limit", 100, 1, 250);
+  const offset = parse("offset", 0, 0, 1_000_000);
+  return limit === null || offset === null ? null : { limit, offset };
+}
+
 function safeGitHubLink(finding: SanitizedFinding): string {
   const node = finding.path?.find((item) => item.role === "source") ?? finding.path?.[0];
   const base = `${finding.repository.url}/commit/${finding.revision.sha}`;
@@ -164,6 +178,8 @@ export class OperatorRouter {
     try {
       const url = new URL(request.url);
       if (request.method === "GET" && url.pathname === "/api/findings") {
+        const page = findingPage(url.searchParams);
+        if (page === null) return invalidRequest();
         const findings = (await this.#data.listFindings())
           .map((item) => sanitizedFindingSchema.parse(item))
           .filter((item) => matchesFilters(item, url.searchParams))
@@ -172,7 +188,8 @@ export class OperatorRouter {
               severityRank[right.severity] - severityRank[left.severity] ||
               (right.exploitability?.score ?? 0) - (left.exploitability?.score ?? 0) ||
               Date.parse(right.detectedAt) - Date.parse(left.detectedAt),
-          );
+          )
+          .slice(page.offset, page.offset + page.limit);
         return json({ findings });
       }
 

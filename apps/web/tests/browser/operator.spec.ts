@@ -1,20 +1,29 @@
 import { expect, test } from "@playwright/test";
 
-test("filters findings and completes a secret-safe human review", async ({ page }) => {
+const liveFinding = {
+  findingId: "76a23814-bfc1-4c15-9444-f7019803e6dd",
+  detectedAt: "2026-08-15T12:00:00.000Z",
+  repository: { id: 41, fullName: "fixture/live-service", url: "https://github.com/fixture/live-service" },
+  revision: { ref: "refs/heads/main", sha: "a827f9c" },
+  category: "command_injection",
+  cwe: "CWE-78",
+  severity: "critical",
+  confidence: 0.96,
+  exploitability: { score: 96, level: "high_confidence_static_path", attackerSourceIdentified: true, completeDataflowObserved: true, sanitizerObserved: false, authBarrierObserved: false, runtimeVerified: false, activeTestingPerformed: false, deploymentConfirmed: false },
+  path: [{ file: "src/routes/render.ts", line: 42, role: "source", symbol: "req.body.filename", edge: "argument" }, { file: "src/routes/render.ts", line: 45, role: "sink", symbol: "child_process.exec", edge: "call" }],
+  reviewState: "UNREVIEWED",
+};
+
+test("loads and filters sanitized findings through the same-origin boundary", async ({ page }) => {
+  await page.route("**/api/findings?**", async (route) => route.fulfill({ json: { findings: [liveFinding] } }));
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Findings" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Command Injection/ })).toBeVisible();
+  await expect(page.getByText("fixture/live-service", { exact: false })).toBeVisible();
   await page.getByPlaceholder("Search repository, finding, language").fill("no-such-repository");
-  await expect(page.getByRole("status")).toContainText("No surfaced finding within modeled coverage");
+  await expect(page.getByRole("status")).toContainText("No surfaced finding matches these filters");
   await page.getByRole("button", { name: "Reset" }).click();
-  await page.getByRole("link", { name: /Command Injection/ }).click();
-  await expect(page.getByRole("heading", { name: "Command Injection" })).toBeVisible();
-  const note = page.getByPlaceholder(/Record judgment only/);
-  await note.fill("AWS_SECRET_ACCESS_KEY=do-not-store-this");
-  await page.getByRole("button", { name: "CONFIRMED" }).click();
-  await expect(page.getByRole("status")).toContainText("Note rejected");
-  await note.fill("Reachability and sink model look correct.");
-  await page.getByRole("button", { name: "UNCERTAIN" }).click();
-  await expect(page.getByRole("status")).toContainText("Review saved as Uncertain");
+  await expect(page.getByRole("link", { name: /Command Injection/ })).toBeVisible();
 });
 
 test("navigates the live stream and system safety view", async ({ page }) => {

@@ -190,6 +190,18 @@ describe("sanitized operator HTTP/SSE interface", () => {
     expect(filteredBody.findings[0]?.findingId).toBe(critical.findingId);
   });
 
+  it("bounds and paginates the live findings list", async () => {
+    const first = finding({ category: "configuration", severity: "medium", detectedAt: "2026-08-12T12:00:00.000Z" });
+    const second = finding({ category: "configuration", severity: "medium", detectedAt: "2026-08-12T12:01:00.000Z" });
+    const router = new OperatorRouter(new MemoryOperatorData([first, second]), "operator-test-token");
+
+    const response = await router.handle(request("/api/findings?limit=1&offset=1"));
+    await expect(response.json()).resolves.toEqual({ findings: [first] });
+    for (const query of ["limit=0", "limit=251", "limit=nope", "offset=-1", "offset=1.5"]) {
+      expect((await router.handle(request(`/api/findings?${query}`))).status).toBe(400);
+    }
+  });
+
   it("returns investigation evidence, safe GitHub links, and review updates", async () => {
     const item = finding({
       category: "command_injection",

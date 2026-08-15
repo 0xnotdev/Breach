@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { DemoFinding, FindingDetail, ReviewState } from "../data";
+import Link from "next/link";
 
 const reviewOptions: readonly ReviewState[] = ["Confirmed", "False positive", "Uncertain"];
 
@@ -23,13 +24,13 @@ export function Investigation({ finding, detail }: { finding: DemoFinding; detai
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="Breach findings home"><span className="brand-mark" aria-hidden="true">B</span><span><strong>Breach</strong><small>passive analysis</small></span></a>
-        <nav aria-label="Primary navigation"><a className="nav-link active" href="/" aria-current="page"><span>01</span>Findings</a><a className="nav-link" href="/stream"><span>02</span>Stream</a><a className="nav-link" href="/system"><span>03</span>System</a></nav>
+        <Link className="brand" href="/" aria-label="Breach findings home"><span className="brand-mark" aria-hidden="true">B</span><span><strong>Breach</strong><small>passive analysis</small></span></Link>
+        <nav aria-label="Primary navigation"><Link className="nav-link active" href="/" aria-current="page"><span>01</span>Findings</Link><Link className="nav-link" href="/stream"><span>02</span>Stream</Link><Link className="nav-link" href="/system"><span>03</span>System</Link></nav>
         <div className="sidebar-note"><span className="status-dot" aria-hidden="true" /><div><strong>Evidence retained</strong><small>Metadata only</small></div></div>
         <p className="build-tag">VALIDATION MVP · HEAD ONLY</p>
       </aside>
       <main className="workspace investigation">
-        <header className="topbar detail-header"><div><a className="back-link" href="/">← Findings</a><p className="eyebrow">Investigation</p><h1>{finding.title}</h1><p className="subtitle">{finding.repository} · {detail.revision} · {finding.language}</p></div><span className={`severity severity-${finding.severity.toLocaleLowerCase("en-US")}`}>{finding.severity}</span></header>
+        <header className="topbar detail-header"><div><Link className="back-link" href="/">← Findings</Link><p className="eyebrow">Investigation</p><h1>{finding.title}</h1><p className="subtitle">{finding.repository} · {detail.revision} · {finding.language}</p></div><span className={`severity severity-${finding.severity.toLocaleLowerCase("en-US")}`}>{finding.severity}</span></header>
         <div className="evidence-warning"><strong>Static evidence, not runtime confirmation</strong><span>No execution · no active testing · no deployment confirmation</span></div>
 
         {detail.secret ? <SecretEvidence detail={detail} /> : <PathEvidence detail={detail} />}
