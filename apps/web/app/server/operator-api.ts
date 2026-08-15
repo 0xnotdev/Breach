@@ -1,4 +1,8 @@
-import { sanitizedFindingSchema, type SanitizedFinding } from "@breach/contracts";
+import {
+  reviewStateSchema,
+  sanitizedFindingSchema,
+  type SanitizedFinding,
+} from "@breach/contracts";
 
 const forwardedFindingFilters = new Set([
   "severity",
@@ -12,20 +16,32 @@ const forwardedFindingFilters = new Set([
   "offset",
 ]);
 const maximumResponseBytes = 2 * 1024 * 1024;
+const maximumReviewBytes = 4 * 1024;
 
 interface FindingListPayload {
   readonly findings: readonly SanitizedFinding[];
+}
+
+interface FindingDetailPayload {
+  readonly finding: SanitizedFinding;
+  readonly openOnGitHub: string;
+}
+
+class OperatorProxyError extends Error {
+  constructor(readonly status: number, readonly code: string) {
+    super(code);
+  }
 }
 
 function operatorConfig(): { baseUrl: URL; token: string } {
   const configuredUrl = process.env.API_INTERNAL_URL;
   const token = process.env.OPERATOR_TOKEN;
   if (configuredUrl === undefined || token === undefined || new TextEncoder().encode(token).byteLength < 16) {
-    throw new Error("Operator API is not configured");
+    throw new OperatorProxyError(503, "operator_api_unavailable");
   }
   const baseUrl = new URL(configuredUrl);
   if (!new Set(["http:", "https:"]).has(baseUrl.protocol) || baseUrl.username !== "" || baseUrl.password !== "") {
-    throw new Error("Operator API URL is invalid");
+    throw new OperatorProxyError(503, "operator_api_unavailable");
   }
   baseUrl.search = "";
   baseUrl.hash = "";
@@ -43,43 +59,180 @@ function safeJson(body: unknown, status: number): Response {
   });
 }
 
-function parseFindingList(value: unknown): FindingListPayload {
-  if (typeof value !== "object" || value === null || !("findings" in value) || !Array.isArray(value.findings)) {
-    throw new Error("Operator API returned an invalid finding list");
-  }
-  return { findings: value.findings.map((finding) => sanitizedFindingSchema.parse(finding)) };
+function proxyFailure(error: unknown): Response {
+  return error instanceof OperatorProxyError
+    ? safeJson({ error: error.code }, error.status)
+    : safeJson({ error: "operator_api_unavailable" }, 503);
 }
 
-export async function proxyFindingList(request: Request): Promise<Response> {
+async function operatorJson(path: string, init: { method: "GET" | "POST"; body?: string }): Promise<unknown> {
+  const { baseUrl, token } = operatorConfig();
+  const target = new URL(path, baseUrl);
+  let upstream: Response;
   try {
-    const { baseUrl, token } = operatorConfig();
-    const incoming = new URL(request.url);
-    const target = new URL("/api/findings", baseUrl);
-    for (const [name, value] of incoming.searchParams) {
-      if (!forwardedFindingFilters.has(name) || value.length > 1_024) return safeJson({ error: "invalid_request" }, 400);
-      target.searchParams.append(name, value);
-    }
-
-    const upstream = await fetch(target, {
-      method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
+    upstream = await fetch(target, {
+      method: init.method,
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+        ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(init.body === undefined ? {} : { body: init.body }),
       cache: "no-store",
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
-    const body = await upstream.text();
-    if (new TextEncoder().encode(body).byteLength > maximumResponseBytes) {
-      return safeJson({ error: "upstream_response_too_large" }, 502);
-    }
-    const parsed: unknown = JSON.parse(body);
-    if (!upstream.ok) {
-      return safeJson(
-        upstream.status >= 400 && upstream.status < 500 ? parsed : { error: "operator_api_unavailable" },
-        upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502,
-      );
-    }
-    return safeJson(parseFindingList(parsed), 200);
   } catch {
-    return safeJson({ error: "operator_api_unavailable" }, 503);
+    throw new OperatorProxyError(503, "operator_api_unavailable");
+  }
+
+  const body = await upstream.text();
+  if (new TextEncoder().encode(body).byteLength > maximumResponseBytes) {
+    throw new OperatorProxyError(502, "upstream_response_too_large");
+  }
+  let parsed: unknown;
+  if (upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLocaleLowerCase("en-US") !== "application/json") {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  if (!upstream.ok) {
+    if (upstream.status === 400) throw new OperatorProxyError(400, "invalid_request");
+    if (upstream.status === 404) throw new OperatorProxyError(404, "not_found");
+    throw new OperatorProxyError(502, "operator_api_unavailable");
+  }
+  return parsed;
+}
+
+function parseFindingList(value: unknown): FindingListPayload {
+  if (typeof value !== "object" || value === null || !("findings" in value) || !Array.isArray(value.findings)) {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  try {
+    return { findings: value.findings.map((finding) => sanitizedFindingSchema.parse(finding)) };
+  } catch {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+}
+
+function parseFinding(value: unknown): SanitizedFinding {
+  if (typeof value !== "object" || value === null || !("finding" in value)) {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  try {
+    return sanitizedFindingSchema.parse(value.finding);
+  } catch {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+}
+
+function parseFindingDetail(value: unknown): FindingDetailPayload {
+  const finding = parseFinding(value);
+  if (typeof value !== "object" || value === null || !("openOnGitHub" in value) || typeof value.openOnGitHub !== "string") {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  let github: URL;
+  try {
+    github = new URL(value.openOnGitHub);
+  } catch {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  if (
+    github.protocol !== "https:" ||
+    github.hostname !== "github.com" ||
+    github.username !== "" ||
+    github.password !== "" ||
+    !value.openOnGitHub.startsWith(`${finding.repository.url}/`)
+  ) {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  return { finding, openOnGitHub: value.openOnGitHub };
+}
+
+function safeFindingId(id: string): string | null {
+  const parsed = sanitizedFindingSchema.shape.findingId.safeParse(id);
+  return parsed.success ? parsed.data : null;
+}
+
+async function readReview(request: Request): Promise<{ state: "CONFIRMED" | "FALSE_POSITIVE" | "UNCERTAIN"; note?: string }> {
+  const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLocaleLowerCase("en-US");
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  if (mediaType !== "application/json" || !Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maximumReviewBytes) {
+    throw new OperatorProxyError(400, "invalid_request");
+  }
+  const reader = request.body?.getReader();
+  if (reader === undefined) throw new OperatorProxyError(400, "invalid_request");
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    size += chunk.value.byteLength;
+    if (size > maximumReviewBytes) {
+      await reader.cancel();
+      throw new OperatorProxyError(400, "invalid_request");
+    }
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  text += decoder.decode();
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new OperatorProxyError(400, "invalid_request");
+  }
+  if (typeof value !== "object" || value === null) throw new OperatorProxyError(400, "invalid_request");
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "state" && key !== "note")) throw new OperatorProxyError(400, "invalid_request");
+  const state = reviewStateSchema.exclude(["UNREVIEWED"]).safeParse(record.state);
+  const note = record.note;
+  if (!state.success || (note !== undefined && (typeof note !== "string" || note.length > 500))) {
+    throw new OperatorProxyError(400, "invalid_request");
+  }
+  return { state: state.data, ...(typeof note === "string" ? { note } : {}) };
+}
+
+export async function proxyFindingList(request: Request): Promise<Response> {
+  try {
+    const incoming = new URL(request.url);
+    const target = new URL("http://operator.local/api/findings");
+    for (const [name, value] of incoming.searchParams) {
+      if (!forwardedFindingFilters.has(name) || target.searchParams.has(name) || value.length > 1_024) {
+        return safeJson({ error: "invalid_request" }, 400);
+      }
+      target.searchParams.set(name, value);
+    }
+    return safeJson(parseFindingList(await operatorJson(`${target.pathname}${target.search}`, { method: "GET" })), 200);
+  } catch (error) {
+    return proxyFailure(error);
+  }
+}
+
+export async function proxyFindingDetail(id: string): Promise<Response> {
+  try {
+    const findingId = safeFindingId(id);
+    if (findingId === null) return safeJson({ error: "not_found" }, 404);
+    return safeJson(parseFindingDetail(await operatorJson(`/api/findings/${encodeURIComponent(findingId)}`, { method: "GET" })), 200);
+  } catch (error) {
+    return proxyFailure(error);
+  }
+}
+
+export async function proxyFindingReview(request: Request, id: string): Promise<Response> {
+  try {
+    const findingId = safeFindingId(id);
+    if (findingId === null) return safeJson({ error: "not_found" }, 404);
+    const review = await readReview(request);
+    const value = await operatorJson(`/api/findings/${encodeURIComponent(findingId)}/review`, {
+      method: "POST",
+      body: JSON.stringify(review),
+    });
+    return safeJson({ finding: parseFinding(value) }, 200);
+  } catch (error) {
+    return proxyFailure(error);
   }
 }

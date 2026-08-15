@@ -149,7 +149,7 @@ function formatDetectedAt(value: string): string {
 }
 
 function titleCase(value: string): string {
-  return value.replace(/\b\w/gu, (letter) => letter.toLocaleUpperCase("en-US"));
+  return value.toLocaleLowerCase("en-US").replace(/\b\w/gu, (letter) => letter.toLocaleUpperCase("en-US"));
 }
 
 function Metric({ value, label, tone = "default" }: { value: string; label: string; tone?: "default" | "danger" }) {

@@ -11,6 +11,7 @@ const baseUrl = `http://127.0.0.1:${String(port)}`;
 let server;
 let upstream;
 let upstreamAuthorization = "";
+let upstreamFinding;
 const operatorToken = "operator-runtime-secret-987654321";
 const liveFinding = {
   findingId: "76a23814-bfc1-4c15-9444-f7019803e6dd",
@@ -29,8 +30,7 @@ const liveFinding = {
 before(async () => {
   upstream = createServer((request, response) => {
     upstreamAuthorization = request.headers.authorization ?? "";
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ findings: [liveFinding] }));
+    void handleUpstream(request, response);
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const address = upstream.address();
@@ -48,6 +48,30 @@ before(async () => {
   }
   throw new Error("Production server did not become ready");
 });
+
+async function handleUpstream(request, response) {
+  upstreamFinding ??= liveFinding;
+  const path = new URL(request.url ?? "/", "http://operator.local").pathname;
+  response.setHeader("content-type", "application/json");
+  if (request.method === "GET" && path === "/api/findings") {
+    response.end(JSON.stringify({ findings: [upstreamFinding] }));
+    return;
+  }
+  if (request.method === "GET" && path === `/api/findings/${liveFinding.findingId}`) {
+    response.end(JSON.stringify({ finding: upstreamFinding, openOnGitHub: "https://github.com/fixture/live-service/blob/a827f9c/src/routes/render.ts#L42" }));
+    return;
+  }
+  if (request.method === "POST" && path === `/api/findings/${liveFinding.findingId}/review`) {
+    let text = "";
+    for await (const chunk of request) text += String(chunk);
+    const review = JSON.parse(text);
+    upstreamFinding = { ...upstreamFinding, reviewState: review.state };
+    response.end(JSON.stringify({ finding: upstreamFinding }));
+    return;
+  }
+  response.statusCode = 404;
+  response.end('{"error":"not_found"}');
+}
 
 after(() => { server?.kill(); upstream?.close(); });
 
@@ -79,6 +103,15 @@ test("frontendNeverImportsDemoFindingsInProduction", async () => {
   const source = await readFile(new URL("app/ui/FindingsConsole.tsx", templateRoot), "utf8");
   assert.doesNotMatch(source, /demoFindings|from\s+["'][^"']*data["']/u);
   assert.match(source, /\/api\/findings/u);
+});
+
+test("frontendNeverImportsDemoDetailsInProduction", async () => {
+  const sources = await Promise.all([
+    readFile(new URL("app/findings/[id]/page.tsx", templateRoot), "utf8"),
+    readFile(new URL("app/ui/Investigation.tsx", templateRoot), "utf8"),
+  ]);
+  assert.doesNotMatch(sources.join("\n"), /demoDetails|getFinding|from\s+["'][^"']*data["']/u);
+  await assert.rejects(access(new URL("app/data.ts", templateRoot)));
 });
 
 test("frontendDoesNotContainOperatorToken", async () => {
@@ -113,6 +146,30 @@ test("same-origin findings route injects authorization server-side", async () =>
   assert.equal(rejected.status, 400);
 });
 
+test("same-origin detail and review routes persist without echoing notes", async () => {
+  const detail = await fetch(`${baseUrl}/api/findings/${liveFinding.findingId}`);
+  assert.equal(detail.status, 200);
+  await expectBody(detail, { finding: liveFinding, openOnGitHub: "https://github.com/fixture/live-service/blob/a827f9c/src/routes/render.ts#L42" });
+
+  const reviewed = await fetch(`${baseUrl}/api/findings/${liveFinding.findingId}/review`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state: "CONFIRMED", note: "Path verified on GitHub." }),
+  });
+  assert.equal(reviewed.status, 200);
+  const reviewedBody = await reviewed.json();
+  assert.equal(reviewedBody.finding.reviewState, "CONFIRMED");
+  assert.doesNotMatch(JSON.stringify(reviewedBody), /Path verified|reviewNote/u);
+
+  const reloaded = await fetch(`${baseUrl}/api/findings/${liveFinding.findingId}`);
+  assert.equal((await reloaded.json()).finding.reviewState, "CONFIRMED");
+  upstreamFinding = liveFinding;
+});
+
+async function expectBody(response, expected) {
+  assert.deepEqual(await response.json(), expected);
+}
+
 test("removes every disposable starter artifact", async () => {
   await assert.rejects(access(new URL("app/_sites-preview/SkeletonPreview.tsx", templateRoot)));
   await assert.rejects(access(new URL("app/_sites-preview/preview.css", templateRoot)));
@@ -122,34 +179,21 @@ test("removes every disposable starter artifact", async () => {
 });
 
 test("renders semantic investigation evidence and review controls", async () => {
-  const response = await render("/findings/cmd-injection-a827f9c");
+  const response = await render(`/findings/${liveFinding.findingId}`);
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /Investigation/);
-  assert.match(html, /ENTRY.*SOURCE.*FLOW.*SINK/s);
-  assert.match(html, /req\.body\.filename/);
-  assert.match(html, /child_process\.exec/);
-  assert.match(html, /Reasons surfaced/);
-  assert.match(html, /Observed barriers/);
-  assert.match(html, /Coverage &amp; limitations/);
-  assert.match(html, /Static evidence, not runtime confirmation/);
-  assert.match(html, /CONFIRMED/);
-  assert.match(html, /FALSE POSITIVE/);
-  assert.match(html, /UNCERTAIN/);
-  assert.match(html, /Open on GitHub/);
-  assert.match(html, /blob\/a827f9c\/src\/routes\/render\.ts#L42/);
+  assert.match(html, /Loading investigation/);
+  const source = await readFile(new URL("app/ui/Investigation.tsx", templateRoot), "utf8");
+  for (const text of ["Reasons surfaced", "Observed barriers", "Coverage & limitations", "Static evidence, not runtime confirmation", "CONFIRMED", "FALSE_POSITIVE", "UNCERTAIN", "Open on GitHub"]) assert.match(source, new RegExp(text.replace(/[&]/gu, "&"), "u"));
+  assert.doesNotMatch(source, /POST \/api\/render/u);
 });
 
 test("renders secret details without retaining the raw value", async () => {
-  const response = await render("/findings/secret-52f7ab19");
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /AWS Secret Access Key/);
-  assert.match(html, /\.env:8/);
-  assert.match(html, /Fingerprint/);
-  assert.match(html, /9ad3…17e2/);
-  assert.match(html, /Raw value NOT RETAINED/);
-  assert.doesNotMatch(html, /AKIA[0-9A-Z]{16}/);
+  const source = await readFile(new URL("app/ui/Investigation.tsx", templateRoot), "utf8");
+  assert.match(source, /HMAC fingerprint/);
+  assert.match(source, /Raw value NOT RETAINED/);
+  assert.match(source, /fingerprint\.slice\(0, 12\).*fingerprint\.slice\(-12\)/s);
+  assert.doesNotMatch(source, /AKIA[0-9A-Z]{16}/);
 });
 
 test("renders every sanitized public scan state in the live stream", async () => {

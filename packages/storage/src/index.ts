@@ -107,10 +107,6 @@ export interface StoredStateEvent {
   occurredAt: Date;
 }
 
-export interface ReviewedFinding extends SanitizedFinding {
-  reviewNote?: string;
-}
-
 export interface MetadataStore {
   bootstrapDiscovery(
     streamName: string,
@@ -134,7 +130,7 @@ export interface MetadataStore {
     findingId: string,
     reviewState: Exclude<ReviewState, "UNREVIEWED">,
     reviewNote?: string,
-  ): Promise<ReviewedFinding>;
+  ): Promise<SanitizedFinding>;
   transition(repoId: number, nextState: CandidateState): Promise<void>;
   scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number): Promise<void>;
   claimScan(repoId: number, headSha: string, startedAt: Date): Promise<boolean>;
@@ -528,7 +524,7 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         );
       });
 
-      return reviewNote === undefined ? updated : { ...updated, reviewNote };
+      return updated;
     },
 
     async transition(repoId, nextState) {

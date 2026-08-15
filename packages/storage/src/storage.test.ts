@@ -209,7 +209,7 @@ describe("metadata persistence seam", () => {
     await expect(store.getFinding(dependencyFinding.findingId)).resolves.toMatchObject({ dependencyEvidence: { packageName: "lodash", advisoryId: "GHSA-FAKE-1234" } });
   });
 
-  it("stores only validation review states and non-sensitive notes", async () => {
+  it("reviewPersistsInPostgresWithoutEchoingNote", async () => {
     const findingId = randomUUID();
     await store.saveFinding({
       findingId,
@@ -227,10 +227,15 @@ describe("metadata persistence seam", () => {
       reviewState: "UNREVIEWED",
     });
 
-    await expect(store.reviewFinding(findingId, "CONFIRMED", "Path verified on GitHub.")).resolves.toMatchObject({
-      reviewState: "CONFIRMED",
-      reviewNote: "Path verified on GitHub.",
-    });
+    const reviewed = await store.reviewFinding(findingId, "CONFIRMED", "Path verified on GitHub.");
+    expect(reviewed.reviewState).toBe("CONFIRMED");
+    expect(reviewed).not.toHaveProperty("reviewNote");
+    await expect(store.getFinding(findingId)).resolves.toMatchObject({ reviewState: "CONFIRMED" });
+    const storedReview = await pool.query<{ review_state: string; review_note: string }>(
+      "SELECT review_state, review_note FROM finding_reviews WHERE finding_id = $1",
+      [findingId],
+    );
+    expect(storedReview.rows).toEqual([{ review_state: "CONFIRMED", review_note: "Path verified on GitHub." }]);
     await expect(
       store.reviewFinding(findingId, "FALSE_POSITIVE", "AWS_SECRET_ACCESS_KEY=CANARY_RAW"),
     ).rejects.toThrow("sensitive content");
