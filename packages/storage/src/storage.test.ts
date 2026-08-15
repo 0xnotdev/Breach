@@ -24,12 +24,22 @@ describe("metadata persistence seam", () => {
   it("records a discovery page before advancing its exclusive cursor", async () => {
     await store.recordDiscoveryPage("public-repositories", 102, [
       {
+        repoId: 100,
+        fullName: "fixture/capacity",
+        htmlUrl: "https://github.com/fixture/capacity",
+        discoveredAt: new Date("2026-08-12T11:59:59.000Z"),
+        priorityScore: 6,
+        candidateState: "SKIPPED",
+        selectionReason: "capacity",
+      },
+      {
         repoId: 101,
         fullName: "fixture/one",
         htmlUrl: "https://github.com/fixture/one",
         discoveredAt: new Date("2026-08-12T12:00:00.000Z"),
         priorityScore: 7,
         candidateState: "WAITING_FOR_COMMIT",
+        selectionReason: "selected",
       },
       {
         repoId: 102,
@@ -38,6 +48,7 @@ describe("metadata persistence seam", () => {
         discoveredAt: new Date("2026-08-12T12:00:01.000Z"),
         priorityScore: 1,
         candidateState: "SKIPPED",
+        selectionReason: "score",
       },
     ]);
 
@@ -45,7 +56,14 @@ describe("metadata persistence seam", () => {
     await expect(store.getCandidate(101)).resolves.toMatchObject({
       fullName: "fixture/one",
       candidateState: "WAITING_FOR_COMMIT",
+      selectionReason: "selected",
     });
+    await expect(store.getCandidate(100)).resolves.toMatchObject({ selectionReason: "capacity" });
+    await expect(store.getMetricSamples("candidates.discovered")).resolves.toMatchObject([{ value: 3 }]);
+    await expect(store.getMetricSamples("candidates.eligible")).resolves.toMatchObject([{ value: 2 }]);
+    await expect(store.getMetricSamples("candidates.selected")).resolves.toMatchObject([{ value: 1 }]);
+    await expect(store.getMetricSamples("candidates.skipped_capacity")).resolves.toMatchObject([{ value: 1 }]);
+    await expect(store.getMetricSamples("candidates.skipped_score")).resolves.toMatchObject([{ value: 1 }]);
   });
 
   it("freshDatabaseBootstrapsAtCurrentFrontier", async () => {
@@ -82,6 +100,7 @@ describe("metadata persistence seam", () => {
           discoveredAt: new Date("2026-08-12T12:00:00.000Z"),
           priorityScore: 5,
           candidateState: "WAITING_FOR_COMMIT",
+          selectionReason: "selected",
         },
         {
           repoId: 52,
@@ -90,6 +109,7 @@ describe("metadata persistence seam", () => {
           discoveredAt: new Date("2026-08-12T12:00:01.000Z"),
           priorityScore: 5,
           candidateState: "WAITING_FOR_COMMIT",
+          selectionReason: "selected",
         },
       ]),
     ).rejects.toThrow();
@@ -107,6 +127,7 @@ describe("metadata persistence seam", () => {
         discoveredAt: new Date("2026-08-12T12:00:00.000Z"),
         priorityScore: 8,
         candidateState: "WAITING_FOR_COMMIT",
+        selectionReason: "selected",
       },
     ]);
 
@@ -189,6 +210,7 @@ describe("metadata persistence seam", () => {
         discoveredAt: new Date("2026-08-12T12:00:00.000Z"),
         priorityScore: 8,
         candidateState: "WAITING_FOR_COMMIT",
+        selectionReason: "selected",
       },
     ]);
     const headSha = "d".repeat(40);
@@ -233,6 +255,7 @@ describe("metadata persistence seam", () => {
       );
     }
     await expect(store.recordDiscoveryPage("", -1, [])).rejects.toThrow("Invalid discovery cursor");
+    await expect(store.recordDiscoveryPage("public-repositories", 1, [{ repoId: 1, fullName: "fixture/mismatch", htmlUrl: "https://github.com/fixture/mismatch", discoveredAt: new Date(), priorityScore: 90, candidateState: "WAITING_FOR_COMMIT", selectionReason: "score" }])).rejects.toThrow("does not match");
     await expect(store.getDiscoveryCursor("missing")).resolves.toBeNull();
     await expect(store.transitionCandidate(999, "READY")).rejects.toThrow("does not exist");
     await expect(store.reviewFinding(randomUUID(), "CONFIRMED")).rejects.toThrow("does not exist");
@@ -246,7 +269,7 @@ describe("metadata persistence seam", () => {
 
   it("supports note-free reviews, scheduling, alias transitions, batches, and label fallback", async () => {
     const repoId = 601;
-    await store.recordDiscoveryPage("public-repositories", repoId, [{ repoId, fullName: "fixture/edges", htmlUrl: "https://github.com/fixture/edges", discoveredAt: new Date("2026-08-12T12:00:00.000Z"), priorityScore: 1, candidateState: "WAITING_FOR_COMMIT" }]);
+    await store.recordDiscoveryPage("public-repositories", repoId, [{ repoId, fullName: "fixture/edges", htmlUrl: "https://github.com/fixture/edges", discoveredAt: new Date("2026-08-12T12:00:00.000Z"), priorityScore: 1, candidateState: "WAITING_FOR_COMMIT", selectionReason: "selected" }]);
     await store.scheduleCommitCheck(repoId, new Date("2026-08-12T12:05:00.000Z"), 2);
     await store.transition(repoId, "READY");
     const findingId = randomUUID();

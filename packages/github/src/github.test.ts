@@ -7,6 +7,7 @@ import {
   applyPushEvent,
   type GitHubResponse,
   type GitHubTransport,
+  type RepositoryMetadata,
 } from "./index.js";
 
 class ScriptedTransport implements GitHubTransport {
@@ -35,37 +36,74 @@ const response = (
 
 describe("GitHub metadata intake and commit authorization", () => {
   it("validates policy bounds and dispatcher recovery/absolute URLs", async () => {
-    expect(() => new CandidatePolicy({ minimumScore: 1, capacityRatio: -0.1 })).toThrow(RangeError);
-    expect(() => new CandidatePolicy({ minimumScore: 1, capacityRatio: 1.1 })).toThrow(RangeError);
+    expect(() => new CandidatePolicy({ minimumScore: 1, targetSelectionRatio: -0.1 })).toThrow(RangeError);
+    expect(() => new CandidatePolicy({ minimumScore: 1, targetSelectionRatio: 1.1 })).toThrow(RangeError);
+    expect(() => new CandidatePolicy({ minimumScore: -1, targetSelectionRatio: 0.1 })).toThrow(RangeError);
+    expect(() => new CandidatePolicy({ minimumScore: 1.5, targetSelectionRatio: 0.1 })).toThrow(RangeError);
+    expect(() => new CandidatePolicy({ minimumScore: 1, targetSelectionRatio: Number.NaN })).toThrow(RangeError);
     let calls = 0;
     const dispatcher = new AsyncSerialDispatcher({ get: (url) => { calls += 1; return calls === 1 ? Promise.reject(new Error("transient")) : Promise.resolve(response(200, url)); } });
     await expect(dispatcher.get("https://api.github.com/absolute")).rejects.toThrow("transient");
     await expect(dispatcher.get("relative")).resolves.toMatchObject({ body: "https://api.github.com/relative" });
   });
 
-  it("prioritizes backend metadata without reading repository content", () => {
-    const policy = new CandidatePolicy({ minimumScore: 5, capacityRatio: 0.08 });
-
-    expect(
-      policy.classify({
-        id: 701,
-        name: "payment-api",
-        fullName: "fixture/payment-api",
-        htmlUrl: "https://github.com/fixture/payment-api",
-        description: "Cloud auth backend server",
+  it("prioritizes the highest-scoring eligible metadata before capacity", () => {
+    const policy = new CandidatePolicy({ minimumScore: 20, targetSelectionRatio: 0.25 });
+    const repositories = [
+      {
+        id: 704,
+        name: "payment-auth-api",
+        fullName: "fixture/payment-auth-api",
+        htmlUrl: "https://github.com/fixture/payment-auth-api",
+        description: "Cloud backend server with Docker and Terraform",
         fork: false,
-      }),
-    ).toMatchObject({ state: "WAITING_FOR_COMMIT", score: 13 });
-    expect(
-      policy.classify({
+        ownerType: "Organization",
+      },
+      {
+        id: 703,
+        name: "backend-api",
+        fullName: "fixture/backend-api",
+        htmlUrl: "https://github.com/fixture/backend-api",
+        description: "Small server",
+        fork: false,
+        ownerType: "User",
+      },
+      {
         id: 702,
-        name: "docs",
-        fullName: "fixture/docs",
-        htmlUrl: "https://github.com/fixture/docs",
-        description: "Documentation only",
+        name: "tutorial-api",
+        fullName: "fixture/tutorial-api",
+        htmlUrl: "https://github.com/fixture/tutorial-api",
+        description: "Homework notes and docs",
+        fork: false,
+        ownerType: "User",
+      },
+      {
+        id: 701,
+        name: "mirror",
+        fullName: "fixture/mirror",
+        htmlUrl: "https://github.com/fixture/mirror",
+        description: "Generated repository mirror",
         fork: true,
-      }),
-    ).toMatchObject({ state: "SKIPPED" });
+        ownerType: "Organization",
+      },
+    ] satisfies RepositoryMetadata[];
+
+    expect(policy.admit(repositories)).toEqual([
+      { state: "WAITING_FOR_COMMIT", score: 87, reason: "selected" },
+      { state: "SKIPPED", score: 37, reason: "capacity" },
+      { state: "SKIPPED", score: 0, reason: "score" },
+      { state: "SKIPPED", score: 0, reason: "score" },
+    ]);
+    expect(() => new CandidatePolicy({ minimumScore: 101, targetSelectionRatio: 0.07 })).toThrow(
+      "0 and 100",
+    );
+    expect(policy.admit([])).toEqual([]);
+    const highestPriority = repositories[0];
+    expect(highestPriority).toBeDefined();
+    if (highestPriority === undefined) throw new Error("Missing candidate fixture");
+    expect(new CandidatePolicy({ minimumScore: 0, targetSelectionRatio: 0 }).admit([highestPriority])).toEqual([
+      { state: "SKIPPED", score: 87, reason: "capacity" },
+    ]);
   });
 
   it("records every paginated discovery item before the cursor advances", async () => {
@@ -98,7 +136,7 @@ describe("GitHub metadata intake and commit authorization", () => {
     const pages: Array<{ cursor: number; ids: number[] }> = [];
     const collector = new DiscoveryCollector({
       dispatcher: new AsyncSerialDispatcher(transport, "test-token"),
-      policy: new CandidatePolicy({ minimumScore: 5, capacityRatio: 1 }),
+      policy: new CandidatePolicy({ minimumScore: 5, targetSelectionRatio: 1 }),
       sink: {
         bootstrapDiscovery: () => Promise.resolve(),
         recordDiscoveryPage(_stream, cursor, candidates) {
@@ -140,7 +178,7 @@ describe("GitHub metadata intake and commit authorization", () => {
     const initialized: Array<{ stream: string; cursor: number; at: Date }> = [];
     const collector = new DiscoveryCollector({
       dispatcher: new AsyncSerialDispatcher(transport, "test-token"),
-      policy: new CandidatePolicy({ minimumScore: 5, capacityRatio: 1 }),
+      policy: new CandidatePolicy({ minimumScore: 5, targetSelectionRatio: 1 }),
       sink: {
         bootstrapDiscovery(stream, cursor, at) {
           initialized.push({ stream, cursor, at });
@@ -166,7 +204,7 @@ describe("GitHub metadata intake and commit authorization", () => {
       bootstrapDiscovery: () => Promise.resolve(),
       recordDiscoveryPage: () => Promise.resolve(),
     };
-    const policy = new CandidatePolicy({ minimumScore: 0, capacityRatio: 1 });
+    const policy = new CandidatePolicy({ minimumScore: 0, targetSelectionRatio: 1 });
     const invalidResponses = [
       response(500, {}),
       response(200, null),
@@ -282,7 +320,7 @@ describe("GitHub metadata intake and commit authorization", () => {
       bootstrapDiscovery: () => Promise.resolve(),
       recordDiscoveryPage: () => Promise.resolve(),
     };
-    const policy = new CandidatePolicy({ minimumScore: 0, capacityRatio: 1 });
+    const policy = new CandidatePolicy({ minimumScore: 0, targetSelectionRatio: 1 });
     for (const scripted of [response(500, []), response(200, {}), response(200, [null]), response(200, [{ id: 1, name: "x", full_name: "x/y", html_url: "https://github.com/x/y", description: 4, fork: false }])]) {
       const collector = new DiscoveryCollector({ dispatcher: new AsyncSerialDispatcher(new ScriptedTransport([scripted])), policy, sink });
       await expect(collector.catchUp(0)).rejects.toThrow();

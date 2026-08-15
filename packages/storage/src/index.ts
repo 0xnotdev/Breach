@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import {
+  candidateSelectionReasonSchema,
   candidateStateSchema,
   coverageSchema,
   reviewStateSchema,
   sanitizedFindingSchema,
   type CandidateState,
+  type CandidateSelectionReason,
   type Coverage,
   type ReviewState,
   type SanitizedFinding,
@@ -26,6 +28,7 @@ CREATE TABLE IF NOT EXISTS repository_candidates (
   discovered_at TIMESTAMPTZ NOT NULL,
   priority_score INTEGER NOT NULL,
   candidate_state TEXT NOT NULL,
+  selection_reason TEXT NOT NULL DEFAULT 'selected',
   commit_check_attempts INTEGER NOT NULL DEFAULT 0 CHECK (commit_check_attempts >= 0),
   next_commit_check_at TIMESTAMPTZ,
   first_commit_detected_at TIMESTAMPTZ,
@@ -75,6 +78,9 @@ CREATE TABLE IF NOT EXISTS metric_samples (
   PRIMARY KEY(metric_name, measured_at)
 );
 ALTER TABLE discovery_state ADD COLUMN IF NOT EXISTS bootstrapped_at TIMESTAMPTZ;
+ALTER TABLE repository_candidates ADD COLUMN IF NOT EXISTS selection_reason TEXT NOT NULL DEFAULT 'selected';
+UPDATE repository_candidates SET selection_reason = 'score'
+WHERE candidate_state = 'SKIPPED' AND selection_reason = 'selected';
 `;
 
 export interface DiscoveredCandidate {
@@ -84,6 +90,7 @@ export interface DiscoveredCandidate {
   discoveredAt: Date;
   priorityScore: number;
   candidateState: "WAITING_FOR_COMMIT" | "SKIPPED";
+  selectionReason: CandidateSelectionReason;
 }
 
 export interface StoredCandidate extends Omit<DiscoveredCandidate, "candidateState"> {
@@ -252,14 +259,18 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
           throw new Error("Invalid discovery candidate metadata");
         }
         candidateStateSchema.parse(candidate.candidateState);
+        candidateSelectionReasonSchema.parse(candidate.selectionReason);
+        if ((candidate.candidateState === "WAITING_FOR_COMMIT") !== (candidate.selectionReason === "selected")) {
+          throw new Error("Candidate state does not match its selection reason");
+        }
       }
 
       await inTransaction(pool, async (client) => {
         for (const candidate of candidates) {
           await client.query(
             `INSERT INTO repository_candidates
-              (repo_id, full_name, html_url, discovered_at, priority_score, candidate_state)
-             VALUES ($1, $2, $3, $4, $5, $6)
+              (repo_id, full_name, html_url, discovered_at, priority_score, candidate_state, selection_reason)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (repo_id) DO NOTHING`,
             [
               candidate.repoId,
@@ -268,6 +279,7 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
               candidate.discoveredAt,
               candidate.priorityScore,
               candidate.candidateState,
+              candidate.selectionReason,
             ],
           );
         }
@@ -285,6 +297,11 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
           ["discovery.pages", 1],
           ["discovery.repositories_seen", candidates.length],
           ["discovery.cursor.current", nextCursor],
+          ["candidates.discovered", candidates.length],
+          ["candidates.eligible", candidates.filter(({ selectionReason }) => selectionReason !== "score").length],
+          ["candidates.selected", candidates.filter(({ selectionReason }) => selectionReason === "selected").length],
+          ["candidates.skipped_capacity", candidates.filter(({ selectionReason }) => selectionReason === "capacity").length],
+          ["candidates.skipped_score", candidates.filter(({ selectionReason }) => selectionReason === "score").length],
         ] as const) {
           await client.query(
             `INSERT INTO metric_samples (metric_name, measured_at, metric_value, labels)
@@ -318,6 +335,7 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         discovered_at: Date;
         priority_score: number;
         candidate_state: string;
+        selection_reason: string;
       }>("SELECT * FROM repository_candidates WHERE repo_id = $1", [repoId]);
       const row = result.rows[0];
       if (row === undefined) return null;
@@ -328,6 +346,7 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         discoveredAt: new Date(row.discovered_at),
         priorityScore: row.priority_score,
         candidateState: candidateStateSchema.parse(row.candidate_state),
+        selectionReason: candidateSelectionReasonSchema.parse(row.selection_reason),
       };
     },
 

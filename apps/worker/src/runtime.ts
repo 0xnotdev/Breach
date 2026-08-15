@@ -16,6 +16,8 @@ export interface WorkerConfig {
   healthPort: number;
   discoveryMode: "live" | "historical";
   discoveryStartCursor: number | null;
+  candidateMinimumScore: number;
+  targetSelectionRatio: number;
 }
 
 export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>): WorkerConfig {
@@ -26,6 +28,8 @@ export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string
   const discoveryStartCursor = discoveryStartCursorText === undefined
     ? null
     : Number(discoveryStartCursorText);
+  const candidateMinimumScore = Number(env.CANDIDATE_MINIMUM_SCORE ?? "60");
+  const targetSelectionRatio = Number(env.TARGET_SELECTION_RATIO ?? "0.07");
   let database: URL; try { database = new URL(databaseUrl); } catch { throw new Error("DATABASE_URL must be PostgreSQL"); }
   if (!['postgres:', 'postgresql:'].includes(database.protocol)) throw new Error("DATABASE_URL must be PostgreSQL");
   if (githubToken.length < 8) throw new Error("GITHUB_TOKEN is required");
@@ -35,7 +39,9 @@ export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string
   if (discoveryMode !== "live" && discoveryMode !== "historical") throw new Error("DISCOVERY_MODE must be live or historical");
   if (discoveryMode === "historical" && (discoveryStartCursor === null || !Number.isSafeInteger(discoveryStartCursor) || discoveryStartCursor < 0)) throw new Error("DISCOVERY_START_CURSOR is required for historical discovery");
   if (discoveryMode === "live" && discoveryStartCursor !== null) throw new Error("DISCOVERY_START_CURSOR requires historical discovery mode");
-  return { databaseUrl, githubToken, fingerprintKey, pollIntervalMs, healthPort, discoveryMode, discoveryStartCursor };
+  if (!Number.isInteger(candidateMinimumScore) || candidateMinimumScore < 0 || candidateMinimumScore > 100) throw new Error("CANDIDATE_MINIMUM_SCORE must be between 0 and 100");
+  if (!Number.isFinite(targetSelectionRatio) || targetSelectionRatio <= 0 || targetSelectionRatio > 1) throw new Error("TARGET_SELECTION_RATIO must be greater than 0 and at most 1");
+  return { databaseUrl, githubToken, fingerprintKey, pollIntervalMs, healthPort, discoveryMode, discoveryStartCursor, candidateMinimumScore, targetSelectionRatio };
 }
 
 export class FetchGitHubTransport implements GitHubTransport {
@@ -78,7 +84,7 @@ async function boundedJson(response: Response, maxBytes: number): Promise<unknow
 
 export async function runWorkerCycle(config: WorkerConfig, pool = new Pool({ connectionString: config.databaseUrl, max: 4 })) {
   const store = await createMetadataStore(pool); const dispatcher = new AsyncSerialDispatcher(new FetchGitHubTransport(), config.githubToken);
-  const discovery = new DiscoveryCollector({ dispatcher, policy: new CandidatePolicy({ minimumScore: 35, capacityRatio: .07 }), sink: store });
+  const discovery = new DiscoveryCollector({ dispatcher, policy: new CandidatePolicy({ minimumScore: config.candidateMinimumScore, targetSelectionRatio: config.targetSelectionRatio }), sink: store });
   const cursor = await store.getDiscoveryCursor("public-repositories");
   const nextCursor = cursor === null
     ? config.discoveryMode === "live"

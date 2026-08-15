@@ -45,51 +45,93 @@ export interface RepositoryMetadata {
   htmlUrl: string;
   description: string | null;
   fork: boolean;
+  ownerType?: "Organization" | "User";
 }
 
 export interface CandidateDecision {
   state: "WAITING_FOR_COMMIT" | "SKIPPED";
   score: number;
+  reason: "selected" | "score" | "capacity";
 }
 
 export class CandidatePolicy {
   readonly #minimumScore: number;
-  readonly #capacityRatio: number;
+  readonly #targetSelectionRatio: number;
 
-  constructor(options: { minimumScore: number; capacityRatio: number }) {
-    if (options.capacityRatio < 0 || options.capacityRatio > 1) {
-      throw new RangeError("Capacity ratio must be between 0 and 1");
+  constructor(options: { minimumScore: number; targetSelectionRatio: number }) {
+    if (!Number.isInteger(options.minimumScore) || options.minimumScore < 0 || options.minimumScore > 100) {
+      throw new RangeError("Candidate minimum score must be between 0 and 100");
+    }
+    if (!Number.isFinite(options.targetSelectionRatio) || options.targetSelectionRatio < 0 || options.targetSelectionRatio > 1) {
+      throw new RangeError("Target selection ratio must be between 0 and 1");
     }
     this.#minimumScore = options.minimumScore;
-    this.#capacityRatio = options.capacityRatio;
+    this.#targetSelectionRatio = options.targetSelectionRatio;
   }
 
-  classify(repository: RepositoryMetadata): CandidateDecision {
+  admit(repositories: readonly RepositoryMetadata[]): CandidateDecision[] {
+    const scored = repositories.map((repository) => this.#score(repository));
+    const eligible = scored
+      .map((score, index) => ({ score, index, repoId: repositories[index]?.id ?? 0 }))
+      .filter(({ score }) => score >= this.#minimumScore)
+      .sort((left, right) => right.score - left.score || right.repoId - left.repoId);
+    const capacity = repositories.length === 0 || this.#targetSelectionRatio === 0
+      ? 0
+      : Math.max(1, Math.floor(repositories.length * this.#targetSelectionRatio));
+    const selected = new Set(eligible.slice(0, capacity).map(({ index }) => index));
+
+    return scored.map((score, index) => ({
+      score,
+      state: selected.has(index) ? "WAITING_FOR_COMMIT" : "SKIPPED",
+      reason: selected.has(index) ? "selected" : score >= this.#minimumScore ? "capacity" : "score",
+    }));
+  }
+
+  #score(repository: RepositoryMetadata): number {
+    if (repository.fork) return 0;
     const searchable = `${repository.name} ${repository.description ?? ""}`.toLocaleLowerCase("en-US");
-    const securityTerms = [
-      "api",
-      "backend",
-      "server",
-      "auth",
-      "payment",
-      "cloud",
-      "bot",
-      "deploy",
-      "docker",
-      "terraform",
+    const positiveSignals = [
+      /\bapi\b/u,
+      /\bbackends?\b/u,
+      /\bauth(?:entication|orization)?\b/u,
+      /\bpayments?\b/u,
+      /\bcloud\b/u,
+      /\binfra(?:structure)?\b/u,
+      /\bdeploy(?:ment|er|ing)?\b/u,
+      /\bbots?\b/u,
+      /\bservers?\b/u,
+      /\bdatabases?\b/u,
+      /\bdocker\b/u,
+      /\b(?:kubernetes|k8s)\b/u,
+      /\bterraform\b/u,
+      /\bserverless\b/u,
+      /\bweb[- ]?(?:app|application)s?\b/u,
+      /\bdeveloper[- ]?tools?\b/u,
+      /\bsecurity\b/u,
+      /\bnetwork(?:ing)?\b/u,
     ];
-    const score = (repository.fork ? 0 : 1) + securityTerms.reduce(
-      (total, term) => total + (searchable.includes(term) ? 2 : 0),
+    const negativeSignals = [
+      /\btutorials?\b/u,
+      /\bhomework\b/u,
+      /\bnotes?\b/u,
+      /\bdotfiles?\b/u,
+      /\b(?:docs?|documentation)\b/u,
+      /\bmirrors?\b/u,
+      /\bgenerated\b/u,
+      /\b(?:examples?|starters?)\b/u,
+      /\bcourses?\b/u,
+      /\blearning\b/u,
+    ];
+    const positive = positiveSignals.reduce(
+      (total, signal) => total + (signal.test(searchable) ? 9 : 0),
       0,
     );
-    const capacityBucket = repository.id % 10_000;
-    const withinCapacity = capacityBucket < Math.floor(this.#capacityRatio * 10_000);
-    return {
-      score,
-      state: !repository.fork && score >= this.#minimumScore && withinCapacity
-        ? "WAITING_FOR_COMMIT"
-        : "SKIPPED",
-    };
+    const negative = negativeSignals.reduce(
+      (total, signal) => total + (signal.test(searchable) ? 20 : 0),
+      0,
+    );
+    const ownerBonus = repository.ownerType === "Organization" ? 5 : 0;
+    return Math.max(0, Math.min(100, 10 + ownerBonus + positive - negative));
   }
 }
 
@@ -100,6 +142,7 @@ export interface DiscoveryCandidateRecord {
   discoveredAt: Date;
   priorityScore: number;
   candidateState: "WAITING_FOR_COMMIT" | "SKIPPED";
+  selectionReason: "selected" | "score" | "capacity";
 }
 
 export interface DiscoverySink {
@@ -129,6 +172,12 @@ function parseRepository(value: unknown): RepositoryMetadata {
   ) {
     throw new Error("Invalid repository metadata");
   }
+  const owner = row.owner;
+  let ownerType: "Organization" | "User" | undefined;
+  if (typeof owner === "object" && owner !== null) {
+    const type = (owner as Record<string, unknown>).type;
+    if (type === "Organization" || type === "User") ownerType = type;
+  }
   return {
     id: row.id,
     name: row.name,
@@ -136,6 +185,7 @@ function parseRepository(value: unknown): RepositoryMetadata {
     htmlUrl: row.html_url,
     description: row.description,
     fork: row.fork,
+    ...(ownerType === undefined ? {} : { ownerType }),
   };
 }
 
@@ -213,8 +263,10 @@ export class DiscoveryCollector {
       if (repositories.length > 0) {
         const nextCursor = Math.max(cursor, ...repositories.map((repository) => repository.id));
         const discoveredAt = this.#now();
-        const candidates = repositories.map((repository) => {
-          const decision = this.#policy.classify(repository);
+        const decisions = this.#policy.admit(repositories);
+        const candidates = repositories.map((repository, index) => {
+          const decision = decisions[index];
+          if (decision === undefined) throw new Error("Candidate admission result is incomplete");
           return {
             repoId: repository.id,
             fullName: repository.fullName,
@@ -222,6 +274,7 @@ export class DiscoveryCollector {
             discoveredAt,
             priorityScore: decision.score,
             candidateState: decision.state,
+            selectionReason: decision.reason,
           } satisfies DiscoveryCandidateRecord;
         });
         await this.#sink.recordDiscoveryPage("public-repositories", nextCursor, candidates);

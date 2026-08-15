@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  candidateSelectionReasonSchema,
   candidateStateSchema,
   classifyExploitabilityLevel,
   coverageSchema,
@@ -24,6 +25,12 @@ describe("public metadata contracts", () => {
     ];
 
     expect(states.map((state) => candidateStateSchema.parse(state))).toEqual(states);
+  });
+
+  it("accepts only sanitized candidate admission reasons", () => {
+    const reasons = ["selected", "score", "capacity"];
+    expect(reasons.map((reason) => candidateSelectionReasonSchema.parse(reason))).toEqual(reasons);
+    expect(() => candidateSelectionReasonSchema.parse("repo_id_bucket")).toThrow();
   });
 
   it("rejects a raw secret at the finding seam", () => {

@@ -13,6 +13,8 @@ export const candidateStateSchema = z.enum([
   "RATE_LIMITED",
 ]);
 
+export const candidateSelectionReasonSchema = z.enum(["selected", "score", "capacity"]);
+
 export const reviewStateSchema = z.enum([
   "UNREVIEWED",
   "CONFIRMED",
@@ -126,6 +128,7 @@ export const sanitizedFindingSchema = z
   .strict();
 
 export type CandidateState = z.infer<typeof candidateStateSchema>;
+export type CandidateSelectionReason = z.infer<typeof candidateSelectionReasonSchema>;
 export type Coverage = z.infer<typeof coverageSchema>;
 export type Exploitability = z.infer<typeof exploitabilitySchema>;
 export type ReviewState = z.infer<typeof reviewStateSchema>;
