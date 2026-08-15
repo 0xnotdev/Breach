@@ -15,6 +15,7 @@ const migration = `
 CREATE TABLE IF NOT EXISTS discovery_state (
   stream_name TEXT PRIMARY KEY,
   last_repo_id BIGINT NOT NULL CHECK (last_repo_id >= 0),
+  bootstrapped_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS metric_samples (
   labels JSONB NOT NULL DEFAULT '{}',
   PRIMARY KEY(metric_name, measured_at)
 );
+ALTER TABLE discovery_state ADD COLUMN IF NOT EXISTS bootstrapped_at TIMESTAMPTZ;
 `;
 
 export interface DiscoveredCandidate {
@@ -93,6 +95,11 @@ export interface ReviewedFinding extends SanitizedFinding {
 }
 
 export interface MetadataStore {
+  bootstrapDiscovery(
+    streamName: string,
+    frontierCursor: number,
+    bootstrappedAt: Date,
+  ): Promise<{ cursor: number; bootstrappedAt: Date }>;
   recordDiscoveryPage(
     streamName: string,
     nextCursor: number,
@@ -182,6 +189,55 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
   await pool.query(migration);
 
   const store: MetadataStore = {
+    async bootstrapDiscovery(streamName, frontierCursor, bootstrappedAt) {
+      if (
+        !streamName ||
+        !Number.isSafeInteger(frontierCursor) ||
+        frontierCursor <= 0 ||
+        !Number.isFinite(bootstrappedAt.getTime())
+      ) {
+        throw new Error("Invalid discovery bootstrap input");
+      }
+
+      return inTransaction(pool, async (client) => {
+        await client.query(
+          `INSERT INTO discovery_state (stream_name, last_repo_id, bootstrapped_at, updated_at)
+           VALUES ($1, $2, $3, $3)
+           ON CONFLICT (stream_name) DO NOTHING
+           RETURNING stream_name`,
+          [streamName, frontierCursor, bootstrappedAt],
+        );
+        const state = await client.query<{ last_repo_id: string; bootstrapped_at: Date | null }>(
+          `SELECT last_repo_id, bootstrapped_at FROM discovery_state
+           WHERE stream_name = $1`,
+          [streamName],
+        );
+        const row = state.rows[0];
+        if (row === undefined || row.bootstrapped_at === null) {
+          throw new Error("Discovery bootstrap was not persisted");
+        }
+        const persistedAt = new Date(row.bootstrapped_at);
+        const persistedCursor = Number(row.last_repo_id);
+        const labels = JSON.stringify({ stream: streamName });
+        for (const [name, value] of [
+          ["discovery.bootstrap.repo_id", persistedCursor],
+          ["discovery.bootstrap.timestamp", persistedAt.getTime()],
+          ["discovery.cursor.current", persistedCursor],
+        ] as const) {
+          await client.query(
+            `INSERT INTO metric_samples (metric_name, measured_at, metric_value, labels)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (metric_name, measured_at) DO NOTHING`,
+            [name, persistedAt, value, labels],
+          );
+        }
+        return {
+          cursor: persistedCursor,
+          bootstrappedAt: persistedAt,
+        };
+      });
+    },
+
     async recordDiscoveryPage(streamName, nextCursor, candidates) {
       if (!streamName || nextCursor < 0) throw new Error("Invalid discovery cursor input");
       for (const candidate of candidates) {
@@ -224,6 +280,24 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
                  updated_at = CURRENT_TIMESTAMP`,
           [streamName, nextCursor],
         );
+        const labels = JSON.stringify({ stream: streamName });
+        for (const [name, value] of [
+          ["discovery.pages", 1],
+          ["discovery.repositories_seen", candidates.length],
+          ["discovery.cursor.current", nextCursor],
+        ] as const) {
+          await client.query(
+            `INSERT INTO metric_samples (metric_name, measured_at, metric_value, labels)
+             VALUES ($1, CURRENT_TIMESTAMP, $2, $3)
+             ON CONFLICT (metric_name, measured_at) DO UPDATE SET
+               metric_value = CASE
+                 WHEN EXCLUDED.metric_name = 'discovery.cursor.current'
+                   THEN GREATEST(metric_samples.metric_value, EXCLUDED.metric_value)
+                 ELSE metric_samples.metric_value + EXCLUDED.metric_value
+               END`,
+            [name, value, labels],
+          );
+        }
       });
     },
 

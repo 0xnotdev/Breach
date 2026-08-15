@@ -8,18 +8,34 @@ import { EgressPolicy } from "@breach/security";
 import { SnapshotReader, type BlobStreamTransport } from "@breach/snapshot";
 import { createMetadataStore } from "@breach/storage";
 
-export interface WorkerConfig { databaseUrl: string; githubToken: string; fingerprintKey: string; pollIntervalMs: number; healthPort: number }
+export interface WorkerConfig {
+  databaseUrl: string;
+  githubToken: string;
+  fingerprintKey: string;
+  pollIntervalMs: number;
+  healthPort: number;
+  discoveryMode: "live" | "historical";
+  discoveryStartCursor: number | null;
+}
 
 export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>): WorkerConfig {
   const databaseUrl = env.DATABASE_URL ?? ""; const githubToken = env.GITHUB_TOKEN ?? ""; const fingerprintKey = env.FINGERPRINT_HMAC_KEY ?? "";
   const pollIntervalMs = Number(env.POLL_INTERVAL_MS ?? "30000"); const healthPort = Number(env.WORKER_HEALTH_PORT ?? "8081");
+  const discoveryMode = env.DISCOVERY_MODE ?? "live";
+  const discoveryStartCursorText = env.DISCOVERY_START_CURSOR;
+  const discoveryStartCursor = discoveryStartCursorText === undefined
+    ? null
+    : Number(discoveryStartCursorText);
   let database: URL; try { database = new URL(databaseUrl); } catch { throw new Error("DATABASE_URL must be PostgreSQL"); }
   if (!['postgres:', 'postgresql:'].includes(database.protocol)) throw new Error("DATABASE_URL must be PostgreSQL");
   if (githubToken.length < 8) throw new Error("GITHUB_TOKEN is required");
   if (new TextEncoder().encode(fingerprintKey).byteLength < 32) throw new Error("FINGERPRINT_HMAC_KEY must be at least 32 bytes");
   if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 5_000 || pollIntervalMs > 3_600_000) throw new Error("POLL_INTERVAL_MS is invalid");
   if (!Number.isSafeInteger(healthPort) || healthPort < 1 || healthPort > 65_535) throw new Error("WORKER_HEALTH_PORT is invalid");
-  return { databaseUrl, githubToken, fingerprintKey, pollIntervalMs, healthPort };
+  if (discoveryMode !== "live" && discoveryMode !== "historical") throw new Error("DISCOVERY_MODE must be live or historical");
+  if (discoveryMode === "historical" && (discoveryStartCursor === null || !Number.isSafeInteger(discoveryStartCursor) || discoveryStartCursor < 0)) throw new Error("DISCOVERY_START_CURSOR is required for historical discovery");
+  if (discoveryMode === "live" && discoveryStartCursor !== null) throw new Error("DISCOVERY_START_CURSOR requires historical discovery mode");
+  return { databaseUrl, githubToken, fingerprintKey, pollIntervalMs, healthPort, discoveryMode, discoveryStartCursor };
 }
 
 export class FetchGitHubTransport implements GitHubTransport {
@@ -63,7 +79,12 @@ async function boundedJson(response: Response, maxBytes: number): Promise<unknow
 export async function runWorkerCycle(config: WorkerConfig, pool = new Pool({ connectionString: config.databaseUrl, max: 4 })) {
   const store = await createMetadataStore(pool); const dispatcher = new AsyncSerialDispatcher(new FetchGitHubTransport(), config.githubToken);
   const discovery = new DiscoveryCollector({ dispatcher, policy: new CandidatePolicy({ minimumScore: 35, capacityRatio: .07 }), sink: store });
-  const cursor = await store.getDiscoveryCursor("public-repositories") ?? 0; const nextCursor = await discovery.catchUp(cursor);
+  const cursor = await store.getDiscoveryCursor("public-repositories");
+  const nextCursor = cursor === null
+    ? config.discoveryMode === "live"
+      ? await discovery.bootstrap()
+      : await discovery.catchUp(config.discoveryStartCursor ?? 0)
+    : await discovery.catchUp(cursor);
   const snapshots = new SnapshotReader(dispatcher, new FetchBlobTransport(config.githubToken));
   const orchestrator = new ScanOrchestrator({ gate: new CommitGate(dispatcher), snapshots, store, secretScanner: new SecretScanner(config.fingerprintKey), osv: new FetchOsvTransport(), dataflow: new PassiveExploitabilityAnalyzer() });
   const due = await pool.query<{ repo_id: string; full_name: string; commit_check_attempts: number }>("SELECT repo_id, full_name, commit_check_attempts FROM repository_candidates WHERE candidate_state = 'WAITING_FOR_COMMIT' AND (next_commit_check_at IS NULL OR next_commit_check_at <= CURRENT_TIMESTAMP) ORDER BY priority_score DESC, repo_id LIMIT 25");

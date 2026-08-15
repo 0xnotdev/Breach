@@ -48,6 +48,28 @@ describe("metadata persistence seam", () => {
     });
   });
 
+  it("freshDatabaseBootstrapsAtCurrentFrontier", async () => {
+    const bootstrappedAt = new Date("2026-08-15T10:00:00.000Z");
+
+    await expect(
+      store.bootstrapDiscovery("public-repositories", 120_004, bootstrappedAt),
+    ).resolves.toEqual({ cursor: 120_004, bootstrappedAt });
+    await expect(store.getDiscoveryCursor("public-repositories")).resolves.toBe(120_004);
+    await expect(store.getCandidate(120_003)).resolves.toBeNull();
+    await expect(store.getMetricSamples("discovery.bootstrap.repo_id")).resolves.toEqual([
+      { value: 120_004, labels: { stream: "public-repositories" } },
+    ]);
+    await expect(store.getMetricSamples("discovery.bootstrap.timestamp")).resolves.toEqual([
+      { value: bootstrappedAt.getTime(), labels: { stream: "public-repositories" } },
+    ]);
+
+    const laterAttempt = new Date("2026-08-15T11:00:00.000Z");
+    await expect(
+      store.bootstrapDiscovery("public-repositories", 999_999, laterAttempt),
+    ).resolves.toEqual({ cursor: 120_004, bootstrappedAt });
+    await expect(store.getMetricSamples("discovery.bootstrap.repo_id")).resolves.toHaveLength(1);
+  });
+
   it("does not advance the cursor when a page cannot be fully recorded", async () => {
     await store.recordDiscoveryPage("public-repositories", 50, []);
 
@@ -200,6 +222,16 @@ describe("metadata persistence seam", () => {
   });
 
   it("rejects malformed lifecycle, review, scan, schedule, and metric inputs", async () => {
+    for (const [stream, cursor, at] of [
+      ["", 1, new Date()],
+      ["public-repositories", 0, new Date()],
+      ["public-repositories", 1.5, new Date()],
+      ["public-repositories", 1, new Date("invalid")],
+    ] as const) {
+      await expect(store.bootstrapDiscovery(stream, cursor, at)).rejects.toThrow(
+        "Invalid discovery bootstrap",
+      );
+    }
     await expect(store.recordDiscoveryPage("", -1, [])).rejects.toThrow("Invalid discovery cursor");
     await expect(store.getDiscoveryCursor("missing")).resolves.toBeNull();
     await expect(store.transitionCandidate(999, "READY")).rejects.toThrow("does not exist");

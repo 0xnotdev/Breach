@@ -100,6 +100,7 @@ describe("GitHub metadata intake and commit authorization", () => {
       dispatcher: new AsyncSerialDispatcher(transport, "test-token"),
       policy: new CandidatePolicy({ minimumScore: 5, capacityRatio: 1 }),
       sink: {
+        bootstrapDiscovery: () => Promise.resolve(),
         recordDiscoveryPage(_stream, cursor, candidates) {
           pages.push({ cursor, ids: candidates.map((candidate) => candidate.repoId) });
           return Promise.resolve();
@@ -122,6 +123,76 @@ describe("GitHub metadata intake and commit authorization", () => {
       authorization: "Bearer test-token",
       "x-github-api-version": "2026-03-10",
     });
+  });
+
+  it("discoveryNeverBackfillsFromZeroByDefault", async () => {
+    const bootstrappedAt = new Date("2026-08-15T10:00:00.000Z");
+    const transport = new ScriptedTransport([
+      response(200, {
+        total_count: 2,
+        incomplete_results: false,
+        items: [
+          { id: 120_004 },
+          { id: 120_003 },
+        ],
+      }),
+    ]);
+    const initialized: Array<{ stream: string; cursor: number; at: Date }> = [];
+    const collector = new DiscoveryCollector({
+      dispatcher: new AsyncSerialDispatcher(transport, "test-token"),
+      policy: new CandidatePolicy({ minimumScore: 5, capacityRatio: 1 }),
+      sink: {
+        bootstrapDiscovery(stream, cursor, at) {
+          initialized.push({ stream, cursor, at });
+          return Promise.resolve();
+        },
+        recordDiscoveryPage: () => Promise.reject(new Error("bootstrap must not record candidates")),
+      },
+      now: () => bootstrappedAt,
+    });
+
+    await expect(collector.bootstrap()).resolves.toBe(120_004);
+    expect(initialized).toEqual([
+      { stream: "public-repositories", cursor: 120_004, at: bootstrappedAt },
+    ]);
+    expect(transport.requests).toEqual([
+      "https://api.github.com/search/repositories?q=is%3Apublic&sort=created&order=desc&per_page=100",
+    ]);
+    expect(transport.requests.every((url) => !url.includes("since=0"))).toBe(true);
+  });
+
+  it("rejects an unavailable or malformed discovery frontier", async () => {
+    const sink = {
+      bootstrapDiscovery: () => Promise.resolve(),
+      recordDiscoveryPage: () => Promise.resolve(),
+    };
+    const policy = new CandidatePolicy({ minimumScore: 0, capacityRatio: 1 });
+    const invalidResponses = [
+      response(500, {}),
+      response(200, null),
+      response(200, {}),
+      response(200, { items: [] }),
+      response(200, { items: [null] }),
+      response(200, { items: [{}] }),
+      response(200, { items: [{ id: 1.5 }] }),
+      response(200, { items: [{ id: 0 }] }),
+    ];
+    for (const invalid of invalidResponses) {
+      const collector = new DiscoveryCollector({
+        dispatcher: new AsyncSerialDispatcher(new ScriptedTransport([invalid])),
+        policy,
+        sink,
+      });
+      await expect(collector.bootstrap()).rejects.toThrow();
+    }
+    const limited = new DiscoveryCollector({
+      dispatcher: new AsyncSerialDispatcher(
+        new ScriptedTransport([response(429, {}, { "retry-after": "5" })]),
+      ),
+      policy,
+      sink,
+    });
+    await expect(limited.bootstrap()).rejects.toMatchObject({ status: 429 });
   });
 
   it("serializes GitHub requests even when callers are concurrent", async () => {
@@ -207,7 +278,10 @@ describe("GitHub metadata intake and commit authorization", () => {
   });
 
   it("rejects malformed discovery pages and handles empty/rate-limited discovery", async () => {
-    const sink = { recordDiscoveryPage: () => Promise.resolve() };
+    const sink = {
+      bootstrapDiscovery: () => Promise.resolve(),
+      recordDiscoveryPage: () => Promise.resolve(),
+    };
     const policy = new CandidatePolicy({ minimumScore: 0, capacityRatio: 1 });
     for (const scripted of [response(500, []), response(200, {}), response(200, [null]), response(200, [{ id: 1, name: "x", full_name: "x/y", html_url: "https://github.com/x/y", description: 4, fork: false }])]) {
       const collector = new DiscoveryCollector({ dispatcher: new AsyncSerialDispatcher(new ScriptedTransport([scripted])), policy, sink });

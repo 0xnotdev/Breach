@@ -12,7 +12,14 @@ describe("worker runtime", () => {
     const config = readWorkerConfig({ DATABASE_URL: "postgresql://breach@postgres/breach", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", POLL_INTERVAL_MS: "30000", WORKER_HEALTH_PORT: "8081" });
     expect(config.pollIntervalMs).toBe(30_000);
     expect(config.healthPort).toBe(8081);
+    expect(config.discoveryMode).toBe("live");
+    expect(config.discoveryStartCursor).toBeNull();
+    expect(readWorkerConfig({ DATABASE_URL: "postgresql://breach@postgres/breach", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", DISCOVERY_MODE: "historical", DISCOVERY_START_CURSOR: "500" })).toMatchObject({ discoveryMode: "historical", discoveryStartCursor: 500 });
     expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "", FINGERPRINT_HMAC_KEY: "short" })).toThrow();
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", DISCOVERY_MODE: "historical" })).toThrow("DISCOVERY_START_CURSOR");
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", DISCOVERY_MODE: "invalid" })).toThrow("DISCOVERY_MODE");
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", DISCOVERY_MODE: "live", DISCOVERY_START_CURSOR: "1" })).toThrow("historical discovery mode");
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", DISCOVERY_MODE: "historical", DISCOVERY_START_CURSOR: "-1" })).toThrow("DISCOVERY_START_CURSOR");
   });
 
   it("runs discovery through review with no source persistence", async () => {

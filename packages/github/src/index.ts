@@ -103,6 +103,11 @@ export interface DiscoveryCandidateRecord {
 }
 
 export interface DiscoverySink {
+  bootstrapDiscovery(
+    streamName: string,
+    frontierCursor: number,
+    bootstrappedAt: Date,
+  ): Promise<unknown>;
   recordDiscoveryPage(
     streamName: string,
     nextCursor: number,
@@ -160,6 +165,35 @@ export class DiscoveryCollector {
     this.#policy = options.policy;
     this.#sink = options.sink;
     this.#now = options.now ?? (() => new Date());
+  }
+
+  async bootstrap(): Promise<number> {
+    const result = await this.#dispatcher.get(
+      "/search/repositories?q=is%3Apublic&sort=created&order=desc&per_page=100",
+    );
+    if (result.status === 403 || result.status === 429) {
+      throw new GitHubRateLimitError(result.status, retryAtFromHeaders(result.headers, this.#now()));
+    }
+    if (result.status !== 200 || typeof result.body !== "object" || result.body === null) {
+      throw new Error(`GitHub discovery bootstrap failed with status ${String(result.status)}`);
+    }
+    const items = (result.body as Record<string, unknown>).items;
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error("GitHub discovery bootstrap returned no repository frontier");
+    }
+    const repositoryIds = items.map((item) => {
+      if (typeof item !== "object" || item === null) {
+        throw new Error("GitHub discovery bootstrap returned invalid repository metadata");
+      }
+      const id = (item as Record<string, unknown>).id;
+      if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
+        throw new Error("GitHub discovery bootstrap returned invalid repository metadata");
+      }
+      return id;
+    });
+    const frontier = Math.max(...repositoryIds);
+    await this.#sink.bootstrapDiscovery("public-repositories", frontier, this.#now());
+    return frontier;
   }
 
   async catchUp(initialCursor: number): Promise<number> {
