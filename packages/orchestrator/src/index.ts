@@ -39,7 +39,7 @@ export interface DataflowAccess {
 
 export interface LifecycleStore {
   transition(repoId: number, state: CandidateState, reasonCode?: LifecycleReasonCode): Promise<void>;
-  scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number): Promise<void>;
+  scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number, reasonCode: LifecycleReasonCode): Promise<void>;
   rateLimitCandidate(repoId: number, retryAt: Date, attempt: number): Promise<void>;
   claimScan(repoId: number, headSha: string, startedAt: Date): Promise<boolean>;
   saveFindings(findings: readonly SanitizedFinding[]): Promise<void>;
@@ -291,7 +291,7 @@ export class ScanOrchestrator {
   async process(candidate: GateCandidate): Promise<ProcessResult> {
     const gate = await this.#gate.check(candidate);
     if (gate.kind === "waiting") {
-      await this.#store.scheduleCommitCheck(candidate.repoId, gate.nextCheckAt, gate.attempt);
+      await this.#store.scheduleCommitCheck(candidate.repoId, gate.nextCheckAt, gate.attempt, "empty_repo");
       await this.#store.recordMetric("commit_gate.waiting", 1, { reason_code: "empty_repo" });
       return { kind: "waiting", nextCheckAt: gate.nextCheckAt };
     }

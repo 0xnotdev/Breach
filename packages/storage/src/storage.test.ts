@@ -418,7 +418,7 @@ describe("metadata persistence seam", () => {
     await expect(store.getDiscoveryCursor("missing")).resolves.toBeNull();
     await expect(store.transitionCandidate(999, "READY")).rejects.toThrow("does not exist");
     await expect(store.reviewFinding(randomUUID(), "CONFIRMED")).rejects.toThrow("does not exist");
-    await expect(store.scheduleCommitCheck(1, new Date("invalid"), -1)).rejects.toThrow("Invalid commit recheck");
+    await expect(store.scheduleCommitCheck(1, new Date("invalid"), -1, "empty_repo")).rejects.toThrow("Invalid commit recheck");
     await expect(store.claimScan(1, "bad", new Date("invalid"))).rejects.toThrow("Invalid scan claim");
     await expect(store.getScan(1, "e".repeat(40))).resolves.toBeNull();
     const missingHead = "e".repeat(40);
@@ -433,7 +433,9 @@ describe("metadata persistence seam", () => {
   it("supports note-free reviews, scheduling, alias transitions, batches, and label fallback", async () => {
     const repoId = 601;
     await store.recordDiscoveryPage("public-repositories", repoId, [{ repoId, fullName: "fixture/edges", htmlUrl: "https://github.com/fixture/edges", discoveredAt: new Date("2026-08-12T12:00:00.000Z"), priorityScore: 1, candidateState: "WAITING_FOR_COMMIT", selectionReason: "selected" }]);
-    await store.scheduleCommitCheck(repoId, new Date("2026-08-12T12:05:00.000Z"), 2);
+    await store.scheduleCommitCheck(repoId, new Date("2026-08-12T12:05:00.000Z"), 2, "empty_repo");
+    await expect(store.getCandidate(repoId)).resolves.toMatchObject({ commitCheckAttempts: 2, lifecycleReasonCode: "empty_repo" });
+    await expect(store.getStateEvents(repoId)).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ fromState: "WAITING_FOR_COMMIT", toState: "WAITING_FOR_COMMIT", reasonCode: "empty_repo" })]));
     await store.transition(repoId, "READY");
     const findingId = randomUUID();
     await store.saveFindings([{ findingId, detectedAt: "2026-08-12T12:00:00.000Z", repository: { id: repoId, fullName: "fixture/edges", url: "https://github.com/fixture/edges" }, revision: { ref: "HEAD", sha: "f".repeat(40) }, category: "configuration", severity: "medium", confidence: .8, reviewState: "UNREVIEWED" }]);

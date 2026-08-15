@@ -43,8 +43,8 @@ export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string
   const databaseUrl = env.DATABASE_URL ?? ""; const githubToken = env.GITHUB_TOKEN ?? ""; const fingerprintKey = env.FINGERPRINT_HMAC_KEY ?? "";
   const pollIntervalMs = Number(env.POLL_INTERVAL_MS ?? "30000"); const healthPort = Number(env.WORKER_HEALTH_PORT ?? "8081");
   const discoveryMode = env.DISCOVERY_MODE ?? "live";
-  const discoveryStartCursorText = env.DISCOVERY_START_CURSOR;
-  const discoveryStartCursor = discoveryStartCursorText === undefined
+  const discoveryStartCursorText = env.DISCOVERY_START_CURSOR?.trim();
+  const discoveryStartCursor = discoveryStartCursorText === undefined || discoveryStartCursorText === ""
     ? null
     : Number(discoveryStartCursorText);
   const candidateMinimumScore = Number(env.CANDIDATE_MINIMUM_SCORE ?? "60");

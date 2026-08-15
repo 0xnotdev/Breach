@@ -71,7 +71,7 @@ export interface MetadataStore {
     reviewNote?: string,
   ): Promise<SanitizedFinding>;
   transition(repoId: number, nextState: CandidateState, reasonCode?: LifecycleReasonCode): Promise<void>;
-  scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number): Promise<void>;
+  scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number, reasonCode: LifecycleReasonCode): Promise<void>;
   claimScan(repoId: number, headSha: string, startedAt: Date): Promise<boolean>;
   saveFindings(findings: readonly SanitizedFinding[]): Promise<void>;
   completeScan(
@@ -522,16 +522,30 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
       await store.transitionCandidate(repoId, nextState, reasonCode);
     },
 
-    async scheduleCommitCheck(repoId, nextCheckAt, attempt) {
+    async scheduleCommitCheck(repoId, nextCheckAt, attempt, reasonCode) {
       if (!Number.isInteger(attempt) || attempt < 0 || !Number.isFinite(nextCheckAt.getTime())) {
         throw new Error("Invalid commit recheck schedule");
       }
-      await pool.query(
-        `UPDATE repository_candidates
-         SET commit_check_attempts = $1, next_commit_check_at = $2
-         WHERE repo_id = $3`,
-        [attempt, nextCheckAt, repoId],
-      );
+      const parsedReason = lifecycleReasonCodeSchema.parse(reasonCode);
+      await inTransaction(pool, async (client) => {
+        const current = await client.query<{ candidate_state: string }>(
+          "SELECT candidate_state FROM repository_candidates WHERE repo_id = $1 FOR UPDATE",
+          [repoId],
+        );
+        const row = current.rows[0];
+        if (row === undefined) throw new Error(`Candidate ${String(repoId)} does not exist`);
+        const state = candidateStateSchema.parse(row.candidate_state);
+        await client.query(
+          `UPDATE repository_candidates
+           SET commit_check_attempts = $1, next_commit_check_at = $2, lifecycle_reason_code = $3
+           WHERE repo_id = $4`,
+          [attempt, nextCheckAt, parsedReason, repoId],
+        );
+        await client.query(
+          "INSERT INTO state_events (repo_id, from_state, to_state, reason_code) VALUES ($1, $2, $2, $3)",
+          [repoId, state, parsedReason],
+        );
+      });
     },
 
     async claimScan(repoId, headSha, startedAt) {

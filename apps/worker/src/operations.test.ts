@@ -64,6 +64,12 @@ describe("operational product contract", () => {
     expect(compose).toMatch(/\$\{WEB_PORT:-3000\}:3000/u);
     expect(compose).toMatch(/migrate:\s*\n[\s\S]*service_completed_successfully/u);
     expect(compose).toMatch(/API_INTERNAL_URL:\s*http:\/\/api:8080/u);
+    const worker = compose.slice(compose.indexOf("\n  worker:"), compose.indexOf("\n  web:"));
+    for (const setting of [
+      "DISCOVERY_MODE", "DISCOVERY_START_CURSOR", "CANDIDATE_MINIMUM_SCORE", "TARGET_SELECTION_RATIO",
+      "MAX_DISCOVERY_PAGES_PER_CYCLE", "MAX_DISCOVERY_REQUESTS_PER_CYCLE", "MAX_DISCOVERY_ELAPSED_MS",
+      "MAX_COMMIT_CHECKS_PER_CYCLE", "MAX_SCANS_PER_CYCLE", "GITHUB_QUOTA_RESERVE",
+    ]) expect(worker).toMatch(new RegExp(`\\n\\s+${setting}:\\s+\\$\\{${setting}`));
   });
 
   it("freshComposeSmokeUsesNoPriorVolumeOrRealGitHubCredential", async () => {

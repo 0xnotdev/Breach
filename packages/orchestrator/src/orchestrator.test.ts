@@ -40,7 +40,7 @@ class MemoryLifecycleStore implements LifecycleStore {
   readonly transitions: CandidateState[] = [];
   readonly findings: SanitizedFinding[] = [];
   readonly metrics: Array<{ name: string; value: number; labels: Readonly<Record<string, string>> }> = [];
-  readonly schedules: Array<{ nextCheckAt: Date; attempt: number }> = [];
+  readonly schedules: Array<{ nextCheckAt: Date; attempt: number; reasonCode?: string }> = [];
   readonly rateLimits: Array<{ retryAt: Date; attempt: number }> = [];
   claimResult = true;
   completion: { state: CandidateState; coverage: Coverage; reasonCode?: string } | null = null;
@@ -50,8 +50,8 @@ class MemoryLifecycleStore implements LifecycleStore {
     return Promise.resolve();
   }
 
-  scheduleCommitCheck(_repoId: number, nextCheckAt: Date, attempt: number): Promise<void> {
-    this.schedules.push({ nextCheckAt, attempt });
+  scheduleCommitCheck(_repoId: number, nextCheckAt: Date, attempt: number, reasonCode?: string): Promise<void> {
+    this.schedules.push({ nextCheckAt, attempt, ...(reasonCode === undefined ? {} : { reasonCode }) });
     return Promise.resolve();
   }
 
@@ -134,6 +134,14 @@ const osv: OsvTransport = {
 };
 
 describe("scan orchestration lifecycle", () => {
+  it("parks empty repositories with a durable bounded reason", async () => {
+    const store = new MemoryLifecycleStore();
+    const nextCheckAt = new Date("2026-08-12T12:05:00.000Z");
+    const orchestrator = new ScanOrchestrator({ gate: { check: () => Promise.resolve({ kind: "waiting", nextCheckAt, attempt: 2 }) }, snapshots: { read: () => Promise.reject(new Error("must not read")) }, store, secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"), osv, dataflow: new PassiveExploitabilityAnalyzer() });
+    await expect(orchestrator.process({ repoId: 1301, fullName: "fixture/empty", attempts: 1 })).resolves.toEqual({ kind: "waiting", nextCheckAt });
+    expect(store.schedules).toEqual([{ nextCheckAt, attempt: 2, reasonCode: "empty_repo" }]);
+  });
+
   it("handles rate-limit, closed, and failed gates without reading snapshots", async () => {
     for (const outcome of [{ kind: "rate_limited", retryAt: new Date("2026-08-12T12:01:00.000Z") }, { kind: "closed", reason: "not_public_or_gone" }, { kind: "failed", reason: "unexpected_status" }] as const) {
       const store = new MemoryLifecycleStore(); let reads = 0;

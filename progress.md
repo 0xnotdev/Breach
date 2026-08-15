@@ -912,3 +912,12 @@ This section is append-only. It records the red/green evidence for the productio
 - RED: the deployment contract now requires API on `metadata + operator`, web on `operator` only, and a named operator bridge, while preserving the worker exclusively on internal metadata/proxy-control networks.
 - GREEN: the separate operator bridge restores loopback-published API/UI access without adding any worker internet route; focused operations/security tests and Compose config pass. Full local verification and GitHub fresh-volume/canary execution remain publication gates.
 - Full local GREEN: `npm run verify` again passed 15 files/137 tests, 98.20% statements/lines, 90.11% branches, 92.70% functions, all builds, 14 web checks, 5 Chromium journeys, dependency audit, and the 119-file tracked-secret audit.
+
+### 2026-08-15 19:53 IST — fix 39 CI GREEN / runtime-control and empty-repo reason RED/GREEN
+
+- Published fix 39 as `f6f9615823d3568983e4e7489e1876d895f6ccfd`; local, remote-tracking, and advertised `main` matched. GitHub Actions run `31889606757` passed the complete gate, including fresh-volume migrations, loopback API/UI health, hardened production images, and the containerized zero-retention canary.
+- RED: Compose exposed only the worker poll interval even though the operator contract documents bounded discovery, selection, scan, and quota controls. An explicitly blank optional discovery cursor also parsed as zero and made default live-mode startup invalid. Focused tests reproduced both faults.
+- GREEN: Compose now passes every documented bounded worker control, and blank `DISCOVERY_START_CURSOR` is normalized to an absent cursor for live discovery while historical discovery still requires an explicit non-negative value.
+- RED: empty repositories were safely parked with exponential rechecks and a bounded metric, but their durable candidate lifecycle reason remained the generic admission reason.
+- GREEN: scheduling a commit recheck now atomically persists `empty_repo` on the candidate and appends a same-state lifecycle event carrying that allowlisted reason. The orchestrator contract requires the reason, and focused runtime, operations, orchestration, storage, lint, and strict type tests pass.
+- Full local GREEN: `npm run verify` passed 15 files/138 tests, 98.21% statements/lines, 90.08% branches, 92.70% functions, every workspace build, 14 rendered-web checks, 5 Chromium journeys, zero high/critical production dependency vulnerabilities, and the 119-file tracked-secret audit.
