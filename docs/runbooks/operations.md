@@ -8,4 +8,6 @@ Use a fine-grained GitHub token restricted to read-only public repository metada
 
 Monitor discovery cursor movement, selection ratio, GitHub remaining quota, requests/bytes per scan, p95 latency, partial/failure rate, review precision, and the zero-retention canary. Stop the worker on any retention violation. Under quota pressure, the worker serializes requests and marks rate-limited candidates instead of bypassing the gate.
 
+Lifecycle recovery is explicit: `RATE_LIMITED` returns to `WAITING_FOR_COMMIT` only after its persisted deadline. `READY` and `SCANNING` are non-terminal claimed-scan states. `SKIPPED`, `SCANNED_NO_FINDINGS`, `SCANNED_FINDINGS`, `PARTIAL`, and `FAILED` are terminal for the validation MVP's first observed committed HEAD. A failed claimed scan is finalized with bounded coverage plus one sanitized reason code; it must never remain ambiguously `SCANNING`.
+
 Back up only PostgreSQL metadata. Never add source volumes, Docker socket mounts, core dumps, heap snapshots, or repository archive caches. Verify host swap is disabled or encrypted before production operation. Upgrade by running the complete verification suite, rebuilding images, migrating, then replacing API/web before the worker.

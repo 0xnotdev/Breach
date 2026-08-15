@@ -216,7 +216,7 @@ export async function createWorkerRuntime(
         const requestsBefore = requestCounter.total;
         const result = await orchestrator.process({ repoId: Number(row.repo_id), fullName: row.full_name, attempts: row.commit_check_attempts });
         processed += 1;
-        if (result.kind === "scanned" || (result.kind === "failed" && result.reason === "analysis_failed")) {
+        if (result.kind === "scanned" || (result.kind === "failed" && result.reason !== "github_unavailable")) {
           scansStarted += 1;
           await store.recordMetric("github.requests_per_completed_scan", requestCounter.total - requestsBefore, { outcome: result.kind });
           if (scansStarted >= config.maxScansPerCycle) break;
@@ -433,8 +433,8 @@ export async function runControlledDemo(raw: string) {
   const states: CandidateState[] = ["DISCOVERED", "WAITING_FOR_COMMIT"];
   const findings: SanitizedFinding[] = []; const metrics: Array<{ name: string; value: number }> = [];
   const store: LifecycleStore = {
-    transition: (_id, state) => { states.push(state); return Promise.resolve(); }, scheduleCommitCheck: () => Promise.resolve(), rateLimitCandidate: () => { states.push("RATE_LIMITED"); return Promise.resolve(); }, claimScan: () => Promise.resolve(true),
-    saveFindings: (items) => { findings.push(...items); return Promise.resolve(); }, completeScan: () => Promise.resolve(),
+    transition: (_id, state) => { states.push(state); return Promise.resolve(); }, scheduleCommitCheck: () => Promise.resolve(), rateLimitCandidate: () => { states.push("RATE_LIMITED"); return Promise.resolve(); }, claimScan: () => { states.push("READY", "SCANNING"); return Promise.resolve(true); },
+    saveFindings: (items) => { findings.push(...items); return Promise.resolve(); }, completeScan: (_id, _sha, state) => { states.push(state); return Promise.resolve(); },
     recordMetric: (name, value) => { metrics.push({ name, value }); return Promise.resolve(); },
   };
   const dispatcher = new AsyncSerialDispatcher({ get: () => Promise.resolve({ status: 200, body: [{ sha: "a".repeat(40) }], headers: {} }) });

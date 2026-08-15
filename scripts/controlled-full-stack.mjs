@@ -192,7 +192,7 @@ async function main() {
     const apiAddress = api.server.address();
     if (typeof apiAddress !== "object" || apiAddress === null) throw new Error("Controlled API did not bind");
     const webPort = await reservePort();
-    const vinextCli = fileURLToPath(new URL("../node_modules/vinext/dist/cli.js", import.meta.url));
+    const vinextCli = fileURLToPath(new URL("../apps/web/node_modules/vinext/dist/cli.js", import.meta.url));
     web = spawn(process.execPath, [vinextCli, "start", "--port", String(webPort), "--hostname", "127.0.0.1"], {
       cwd: new URL("../apps/web/", import.meta.url),
       env: { ...process.env, API_INTERNAL_URL: `http://127.0.0.1:${String(apiAddress.port)}`, OPERATOR_TOKEN: operatorToken },

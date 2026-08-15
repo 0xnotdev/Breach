@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import type { ReviewState, SanitizedFinding } from "@breach/contracts";
+import type { LifecycleReasonCode, ReviewState, SanitizedFinding } from "@breach/contracts";
 import { OperatorRouter, type OperatorDataSource, type OperatorRouterOptions, type StreamEvent, type SystemMetric } from "@breach/operator";
 import { createMetadataStore } from "@breach/storage";
 import { readPostgresSystemMetrics } from "./system-metrics.js";
@@ -44,8 +44,8 @@ export class PostgresOperatorDataSource implements OperatorDataSource {
   async getFinding(id: string): Promise<SanitizedFinding | null> { return this.store.getFinding(id); }
   async reviewFinding(id: string, state: Exclude<ReviewState, "UNREVIEWED">, note?: string): Promise<SanitizedFinding> { return this.store.reviewFinding(id, state, ...(note === undefined ? [] : [note])); }
   async listEvents(afterEventId = 0, throughEventId?: number): Promise<readonly StreamEvent[]> {
-    const result = await this.pool.query<{ event_id: string; repo_id: string; full_name: string; to_state: StreamEvent["state"]; occurred_at: Date }>("SELECT e.event_id, e.repo_id, c.full_name, e.to_state, e.occurred_at FROM state_events e JOIN repository_candidates c ON c.repo_id = e.repo_id WHERE e.event_id > $1 AND ($2::bigint IS NULL OR e.event_id <= $2) ORDER BY e.event_id LIMIT 500", [afterEventId, throughEventId ?? null]);
-    return result.rows.map((row) => ({ eventId: Number(row.event_id), repoId: Number(row.repo_id), fullName: row.full_name, state: row.to_state, occurredAt: row.occurred_at.toISOString() }));
+    const result = await this.pool.query<{ event_id: string; repo_id: string; full_name: string; to_state: StreamEvent["state"]; occurred_at: Date; reason_code: LifecycleReasonCode | null }>("SELECT e.event_id, e.repo_id, c.full_name, e.to_state, e.occurred_at, e.reason_code FROM state_events e JOIN repository_candidates c ON c.repo_id = e.repo_id WHERE e.event_id > $1 AND ($2::bigint IS NULL OR e.event_id <= $2) ORDER BY e.event_id LIMIT 500", [afterEventId, throughEventId ?? null]);
+    return result.rows.map((row) => ({ eventId: Number(row.event_id), repoId: Number(row.repo_id), fullName: row.full_name, state: row.to_state, occurredAt: row.occurred_at.toISOString(), ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }) }));
   }
   async latestEventId(): Promise<number> {
     const result = await this.pool.query<{ latest_event_id: string }>("SELECT COALESCE(MAX(event_id), 0) AS latest_event_id FROM state_events");

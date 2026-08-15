@@ -16,6 +16,18 @@ export interface BlobStreamTransport {
   ): AsyncIterable<Uint8Array>;
 }
 
+export type SnapshotFailureReason = "tree_failed" | "blob_failed";
+
+export class SnapshotReadError extends Error {
+  readonly reasonCode: SnapshotFailureReason;
+
+  constructor(reasonCode: SnapshotFailureReason) {
+    super(`Snapshot read failed: ${reasonCode}`);
+    this.name = "SnapshotReadError";
+    this.reasonCode = reasonCode;
+  }
+}
+
 export interface SnapshotBudgets {
   maxFileBytes: number;
   maxRepoBytes: number;
@@ -250,14 +262,24 @@ export class SnapshotReader {
   async read(permit: ScanPermit): Promise<EphemeralSnapshot> {
     assertValidScanPermit(permit);
     const startedAt = this.#nowMs();
-    const treeResult = await this.#treeDispatcher.get(
-      `/repos/${permit.fullName}/git/trees/${permit.headSha}?recursive=1`,
-      "tree",
-    );
-    if (treeResult.status !== 200) {
-      throw new Error(`Git tree request failed with status ${String(treeResult.status)}`);
+    let treeResult;
+    try {
+      treeResult = await this.#treeDispatcher.get(
+        `/repos/${permit.fullName}/git/trees/${permit.headSha}?recursive=1`,
+        "tree",
+      );
+    } catch {
+      throw new SnapshotReadError("tree_failed");
     }
-    const tree = parseTree(treeResult.body);
+    if (treeResult.status !== 200) {
+      throw new SnapshotReadError("tree_failed");
+    }
+    let tree: ReturnType<typeof parseTree>;
+    try {
+      tree = parseTree(treeResult.body);
+    } catch {
+      throw new SnapshotReadError("tree_failed");
+    }
     const discoveredBlobs = [...tree.blobs];
     if (tree.truncated && tree.directories.length > 0) {
       const selectedDirectories = [...tree.directories]
@@ -314,7 +336,8 @@ export class SnapshotReader {
 
     const files: EphemeralFile[] = [];
     let bytesInspected = 0;
-    for (const candidate of candidates) {
+    try {
+      for (const candidate of candidates) {
       if (files.length >= this.#budgets.maxFiles) {
         budgetReasons.add("file_count_budget_exhausted");
         skippedBudget += 1;
@@ -335,21 +358,27 @@ export class SnapshotReader {
       let actualBytes = 0;
       let exceeded = false;
       const url = `${apiRootForPermit(permit)}/git/blobs/${candidate.sha}`;
-      for await (const incoming of this.#blobs.stream(url, {
-        accept: "application/vnd.github.raw+json",
-        "x-github-api-version": apiVersion,
-      })) {
-        const chunk = incoming.slice();
-        actualBytes += chunk.byteLength;
-        if (
-          actualBytes > this.#budgets.maxFileBytes ||
-          bytesInspected + actualBytes > this.#budgets.maxRepoBytes
-        ) {
-          chunk.fill(0);
-          exceeded = true;
-          break;
+      try {
+        for await (const incoming of this.#blobs.stream(url, {
+          accept: "application/vnd.github.raw+json",
+          "x-github-api-version": apiVersion,
+        })) {
+          const chunk = incoming.slice();
+          incoming.fill(0);
+          actualBytes += chunk.byteLength;
+          if (
+            actualBytes > this.#budgets.maxFileBytes ||
+            bytesInspected + actualBytes > this.#budgets.maxRepoBytes
+          ) {
+            chunk.fill(0);
+            exceeded = true;
+            break;
+          }
+          chunks.push(chunk);
         }
-        chunks.push(chunk);
+      } catch {
+        for (const chunk of chunks) chunk.fill(0);
+        throw new SnapshotReadError("blob_failed");
       }
 
       if (exceeded) {
@@ -367,7 +396,7 @@ export class SnapshotReader {
       }
       files.push({ path: candidate.path, bytes });
       bytesInspected += actualBytes;
-    }
+      }
 
     const snapshotPartialReasons: SnapshotPartialReason[] = [
       ...(tree.truncated ? ["tree_truncated" as const] : []),
@@ -399,7 +428,12 @@ export class SnapshotReader {
       treeTruncated: tree.truncated,
       languagesModeled: modeledLanguages(files),
     });
-    return new EphemeralSnapshot(files, coverage);
+      return new EphemeralSnapshot(files, coverage);
+    } catch (error) {
+      for (const file of files) file.bytes.fill(0);
+      files.length = 0;
+      throw error instanceof SnapshotReadError ? error : new SnapshotReadError("blob_failed");
+    }
   }
 }
 

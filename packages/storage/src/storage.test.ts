@@ -5,6 +5,28 @@ import type { Pool } from "pg";
 import { createMetadataStore, type MetadataStore } from "./index.js";
 import { runMigrations } from "./migrations.js";
 
+const incompleteCoverage = (headSha: string) => ({
+  ref: `HEAD@${headSha}`,
+  historyScanned: false as const,
+  scanComplete: false,
+  snapshotComplete: false,
+  analysisComplete: false,
+  analysisPartial: true,
+  snapshotPartialReasons: ["blob_failed" as const],
+  analysisPartialReasons: [],
+  filesSeen: 0,
+  filesEligible: 0,
+  filesAnalyzed: 0,
+  bytesInspected: 0,
+  skippedBinary: 0,
+  skippedGenerated: 0,
+  skippedOversize: 0,
+  skippedBudget: 0,
+  skippedUnsupported: 0,
+  treeTruncated: false,
+  languagesModeled: [],
+});
+
 describe("metadata persistence seam", () => {
   let pool: Pool;
   let store: MetadataStore;
@@ -280,8 +302,18 @@ describe("metadata persistence seam", () => {
       languagesModeled: ["typescript" as const],
     };
 
-    await expect(store.claimScan(501, headSha, startedAt)).resolves.toBe(true);
-    await expect(store.claimScan(501, headSha, startedAt)).resolves.toBe(false);
+    const claims = await Promise.all([
+      store.claimScan(501, headSha, startedAt),
+      store.claimScan(501, headSha, startedAt),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    await expect(store.getCandidate(501)).resolves.toMatchObject({ candidateState: "SCANNING", firstCommitDetectedAt: startedAt, headSha });
+    await expect(store.getStateEvents(501)).resolves.toMatchObject([
+      { fromState: null, toState: "DISCOVERED" },
+      { fromState: "DISCOVERED", toState: "WAITING_FOR_COMMIT" },
+      { fromState: "WAITING_FOR_COMMIT", toState: "READY", reasonCode: "commit_observed" },
+      { fromState: "READY", toState: "SCANNING", reasonCode: "scan_started" },
+    ]);
     await store.completeScan(501, headSha, "SCANNED_NO_FINDINGS", coverage);
     await store.recordMetric("scan.completed", 1, { status: "SCANNED_NO_FINDINGS" });
 
@@ -289,9 +321,85 @@ describe("metadata persistence seam", () => {
       state: "SCANNED_NO_FINDINGS",
       coverage,
     });
+    await expect(store.getCandidate(501)).resolves.toMatchObject({ candidateState: "SCANNED_NO_FINDINGS", lastScanStatus: "SCANNED_NO_FINDINGS" });
     await expect(store.getMetricSamples("scan.completed")).resolves.toEqual([
       { value: 1, labels: { status: "SCANNED_NO_FINDINGS" } },
     ]);
+  });
+
+  it("persists a safe reason and terminal coverage for a failed claimed scan", async () => {
+    const repoId = 502;
+    const headSha = "e".repeat(40);
+    const startedAt = new Date("2026-08-12T12:02:00.000Z");
+    await store.recordDiscoveryPage("public-repositories", repoId, [{ repoId, fullName: "fixture/failed-scan", htmlUrl: "https://github.com/fixture/failed-scan", discoveredAt: startedAt, priorityScore: 90, candidateState: "WAITING_FOR_COMMIT", selectionReason: "selected" }]);
+    await expect(store.claimScan(repoId, headSha, startedAt)).resolves.toBe(true);
+    const coverage = {
+      ref: `HEAD@${headSha}`,
+      historyScanned: false as const,
+      scanComplete: false,
+      snapshotComplete: false,
+      analysisComplete: false,
+      analysisPartial: true,
+      snapshotPartialReasons: ["blob_failed" as const],
+      analysisPartialReasons: [],
+      filesSeen: 0,
+      filesEligible: 0,
+      filesAnalyzed: 0,
+      bytesInspected: 0,
+      skippedBinary: 0,
+      skippedGenerated: 0,
+      skippedOversize: 0,
+      skippedBudget: 0,
+      skippedUnsupported: 0,
+      treeTruncated: false,
+      languagesModeled: [],
+    };
+
+    await store.completeScan(repoId, headSha, "FAILED", coverage, "blob_failed");
+
+    await expect(store.getScan(repoId, headSha)).resolves.toEqual({ state: "FAILED", coverage, failureReasonCode: "blob_failed" });
+    await expect(store.getCandidate(repoId)).resolves.toMatchObject({ candidateState: "FAILED", lastScanStatus: "FAILED", lifecycleReasonCode: "blob_failed" });
+    await expect(store.getStateEvents(repoId)).resolves.toContainEqual(expect.objectContaining({ fromState: "SCANNING", toState: "FAILED", reasonCode: "blob_failed" }));
+  });
+
+  it("differentiates every bounded partial-scan reason", async () => {
+    const cases = [
+      { reason: "analysis_timeout", snapshotReasons: [], analysisReasons: ["timeout"], snapshotComplete: true, analysisComplete: false },
+      { reason: "tree_truncated", snapshotReasons: ["tree_truncated"], analysisReasons: [], snapshotComplete: false, analysisComplete: true },
+      { reason: "blob_oversize", snapshotReasons: ["oversized_files_excluded"], analysisReasons: [], snapshotComplete: false, analysisComplete: true },
+      { reason: "budget_exhausted", snapshotReasons: ["repository_byte_budget_exhausted"], analysisReasons: [], snapshotComplete: false, analysisComplete: true },
+      { reason: "scan_partial", snapshotReasons: ["binary_files_excluded"], analysisReasons: [], snapshotComplete: false, analysisComplete: true },
+    ] as const;
+    for (const [index, item] of cases.entries()) {
+      const repoId = 520 + index;
+      const headSha = String(index + 1).repeat(40);
+      const startedAt = new Date(`2026-08-12T12:0${String(index)}:00.000Z`);
+      await store.recordDiscoveryPage("public-repositories", repoId, [{ repoId, fullName: `fixture/partial-${String(index)}`, htmlUrl: `https://github.com/fixture/partial-${String(index)}`, discoveredAt: startedAt, priorityScore: 90, candidateState: "WAITING_FOR_COMMIT", selectionReason: "selected" }]);
+      await store.claimScan(repoId, headSha, startedAt);
+      const coverage = {
+        ref: `HEAD@${headSha}`,
+        historyScanned: false as const,
+        scanComplete: false,
+        snapshotComplete: item.snapshotComplete,
+        analysisComplete: item.analysisComplete,
+        analysisPartial: !item.analysisComplete,
+        snapshotPartialReasons: [...item.snapshotReasons],
+        analysisPartialReasons: [...item.analysisReasons],
+        filesSeen: 1,
+        filesEligible: 1,
+        filesAnalyzed: 1,
+        bytesInspected: 1,
+        skippedBinary: item.reason === "scan_partial" ? 1 : 0,
+        skippedGenerated: 0,
+        skippedOversize: item.reason === "blob_oversize" ? 1 : 0,
+        skippedBudget: item.reason === "budget_exhausted" ? 1 : 0,
+        skippedUnsupported: 0,
+        treeTruncated: item.reason === "tree_truncated",
+        languagesModeled: [],
+      };
+      await store.completeScan(repoId, headSha, "PARTIAL", coverage);
+      await expect(store.getStateEvents(repoId)).resolves.toContainEqual(expect.objectContaining({ fromState: "SCANNING", toState: "PARTIAL", reasonCode: item.reason }));
+    }
   });
 
   it("rejects malformed lifecycle, review, scan, schedule, and metric inputs", async () => {
@@ -313,6 +421,10 @@ describe("metadata persistence seam", () => {
     await expect(store.scheduleCommitCheck(1, new Date("invalid"), -1)).rejects.toThrow("Invalid commit recheck");
     await expect(store.claimScan(1, "bad", new Date("invalid"))).rejects.toThrow("Invalid scan claim");
     await expect(store.getScan(1, "e".repeat(40))).resolves.toBeNull();
+    const missingHead = "e".repeat(40);
+    await expect(store.completeScan(1, missingHead, "SCANNING", incompleteCoverage(missingHead))).rejects.toThrow("Invalid terminal scan state");
+    await expect(store.completeScan(1, missingHead, "FAILED", incompleteCoverage(missingHead))).rejects.toThrow("requires a reason code");
+    await expect(store.completeScan(1, missingHead, "FAILED", incompleteCoverage(missingHead), "blob_failed")).rejects.toThrow("Claimed scan does not exist");
     for (const [name, value, labels] of [["INVALID", 1, {}], ["valid.metric", Number.NaN, {}], ["valid.metric", 1, { "Bad-Key": "x" }], ["valid.metric", 1, { safe: "x".repeat(81) }]] as const) {
       await expect(store.recordMetric(name, value, labels)).rejects.toThrow();
     }

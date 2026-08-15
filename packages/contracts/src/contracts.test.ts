@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   candidateSelectionReasonSchema,
   candidateStateSchema,
+  candidateTransitionGraph,
+  canTransitionCandidate,
   classifyExploitabilityLevel,
   coverageSchema,
   exploitabilitySchema,
+  lifecycleReasonCodeSchema,
   reviewStateSchema,
   sanitizedFindingSchema,
+  terminalCandidateStates,
 } from "./index.js";
 
 describe("public metadata contracts", () => {
@@ -27,10 +31,35 @@ describe("public metadata contracts", () => {
     expect(states.map((state) => candidateStateSchema.parse(state))).toEqual(states);
   });
 
+  it("defines the complete recoverable candidate state graph", () => {
+    expect(candidateTransitionGraph).toEqual({
+      DISCOVERED: ["SKIPPED", "WAITING_FOR_COMMIT"],
+      SKIPPED: [],
+      WAITING_FOR_COMMIT: ["READY", "FAILED", "RATE_LIMITED"],
+      READY: ["SCANNING", "FAILED"],
+      SCANNING: ["SCANNED_NO_FINDINGS", "SCANNED_FINDINGS", "PARTIAL", "FAILED"],
+      SCANNED_NO_FINDINGS: [],
+      SCANNED_FINDINGS: [],
+      PARTIAL: [],
+      FAILED: [],
+      RATE_LIMITED: ["WAITING_FOR_COMMIT", "FAILED"],
+    });
+    expect(terminalCandidateStates).toEqual(["SKIPPED", "SCANNED_NO_FINDINGS", "SCANNED_FINDINGS", "PARTIAL", "FAILED"]);
+    for (const [from, targets] of Object.entries(candidateTransitionGraph)) {
+      for (const to of candidateStateSchema.options) expect(canTransitionCandidate(from as never, to)).toBe(targets.includes(to as never));
+    }
+  });
+
   it("accepts only sanitized candidate admission reasons", () => {
     const reasons = ["selected", "score", "capacity"];
     expect(reasons.map((reason) => candidateSelectionReasonSchema.parse(reason))).toEqual(reasons);
     expect(() => candidateSelectionReasonSchema.parse("repo_id_bucket")).toThrow();
+  });
+
+  it("accepts only bounded lifecycle reason codes", () => {
+    const reasons = ["empty_repo", "github_rate_limited", "repo_gone", "tree_failed", "blob_failed", "blob_oversize", "budget_exhausted", "parser_failed", "analysis_timeout", "database_failed"];
+    expect(reasons.map((reason) => lifecycleReasonCodeSchema.parse(reason))).toEqual(reasons);
+    expect(() => lifecycleReasonCodeSchema.parse("raw exception: controlled input")).toThrow();
   });
 
   it("rejects a raw secret at the finding seam", () => {

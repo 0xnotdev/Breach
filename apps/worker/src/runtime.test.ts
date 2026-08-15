@@ -96,6 +96,9 @@ describe("worker runtime", () => {
       network.mockResolvedValueOnce(new Response("{}", { status: 200, headers: { "content-length": String(13 * 1024 * 1024) } }));
       await expect(new FetchGitHubTransport().get("https://api.github.com/repositories", {})).rejects.toThrow("exceeds bound");
 
+      network.mockResolvedValueOnce(new Response(new Uint8Array(13 * 1024 * 1024), { status: 200 }));
+      await expect(new FetchGitHubTransport().get("https://api.github.com/repositories", {})).rejects.toThrow("exceeds bound");
+
       const observed: Array<{ family: string; status: number }> = [];
       network.mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "x-ratelimit-remaining": "4998" } }));
       const chunks: number[] = [];
@@ -119,6 +122,11 @@ describe("worker runtime", () => {
       await expect((async () => {
         for await (const chunk of new FetchBlobTransport("read-token").stream(`https://api.github.com/repos/fixture/repo/git/blobs/${"c".repeat(40)}`, {})) { void chunk; }
       })()).rejects.toThrow("status 200");
+
+      network.mockResolvedValueOnce(new Response("denied", { status: 503 }));
+      await expect((async () => {
+        for await (const chunk of new FetchBlobTransport("read-token").stream(`https://api.github.com/repos/fixture/repo/git/blobs/${"d".repeat(40)}`, {})) { void chunk; }
+      })()).rejects.toThrow("status 503");
     } finally {
       network.mockRestore();
     }

@@ -3,6 +3,7 @@ import { SecretScanner, type OsvBatchResponse, type OsvTransport } from "@breach
 import { PassiveExploitabilityAnalyzer } from "@breach/dataflow";
 import type { CandidateState, Coverage, SanitizedFinding } from "@breach/contracts";
 import type { GateOutcome, ScanPermit } from "@breach/github";
+import { SnapshotReadError } from "@breach/snapshot";
 import {
   ScanOrchestrator,
   type LifecycleStore,
@@ -42,7 +43,7 @@ class MemoryLifecycleStore implements LifecycleStore {
   readonly schedules: Array<{ nextCheckAt: Date; attempt: number }> = [];
   readonly rateLimits: Array<{ retryAt: Date; attempt: number }> = [];
   claimResult = true;
-  completion: { state: CandidateState; coverage: Coverage } | null = null;
+  completion: { state: CandidateState; coverage: Coverage; reasonCode?: string } | null = null;
 
   transition(_repoId: number, state: CandidateState): Promise<void> {
     this.transitions.push(state);
@@ -61,6 +62,7 @@ class MemoryLifecycleStore implements LifecycleStore {
   }
 
   claimScan(): Promise<boolean> {
+    if (this.claimResult) this.transitions.push("READY", "SCANNING");
     return Promise.resolve(this.claimResult);
   }
 
@@ -74,8 +76,10 @@ class MemoryLifecycleStore implements LifecycleStore {
     _headSha: string,
     state: CandidateState,
     coverage: Coverage,
+    reasonCode?: string,
   ): Promise<void> {
-    this.completion = { state, coverage };
+    this.completion = { state, coverage, ...(reasonCode === undefined ? {} : { reasonCode }) };
+    this.transitions.push(state);
     return Promise.resolve();
   }
 
@@ -264,8 +268,25 @@ describe("scan orchestration lifecycle", () => {
       orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 }),
     ).resolves.toMatchObject({ kind: "failed" });
     expect(snapshot.released).toBe(true);
-    expect(store.transitions.at(-1)).toBe("FAILED");
+    expect(store.completion).toMatchObject({ state: "FAILED", reasonCode: "parser_failed", coverage: { scanComplete: false, analysisComplete: false, analysisPartialReasons: ["parser_failed"] } });
+    expect(store.metrics).toContainEqual({ name: "scan.failed", value: 1, labels: { reason_code: "parser_failed" } });
     expect(JSON.stringify(store.metrics)).not.toContain("controlled parser failure");
+  });
+
+  it("completes a claimed scan safely when snapshot acquisition fails", async () => {
+    const store = new MemoryLifecycleStore();
+    const orchestrator = new ScanOrchestrator({
+      gate: readyGate,
+      snapshots: { read: () => Promise.reject(new SnapshotReadError("blob_failed")) },
+      store,
+      secretScanner: new SecretScanner("test-key-32-bytes-minimum-1234567890"),
+      osv,
+      dataflow: new PassiveExploitabilityAnalyzer(),
+    });
+
+    await expect(orchestrator.process({ repoId: 1301, fullName: "fixture/orchestrated", attempts: 0 })).resolves.toEqual({ kind: "failed", reason: "blob_failed" });
+    expect(store.completion).toMatchObject({ state: "FAILED", reasonCode: "blob_failed", coverage: { ref: `HEAD@${"a".repeat(40)}`, snapshotComplete: false, analysisComplete: false } });
+    expect(store.metrics).toContainEqual({ name: "scan.failed", value: 1, labels: { reason_code: "blob_failed" } });
   });
 
   it("keeps a budget-limited scan in the PARTIAL state even when findings exist", async () => {

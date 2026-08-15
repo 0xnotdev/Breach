@@ -6,7 +6,7 @@ import {
   type GitHubTransport,
   type ScanPermit,
 } from "@breach/github";
-import { SnapshotReader, type BlobStreamTransport } from "./index.js";
+import { SnapshotReadError, SnapshotReader, type BlobStreamTransport } from "./index.js";
 
 class TreeTransport implements GitHubTransport {
   readonly requests: string[] = [];
@@ -206,6 +206,37 @@ describe("bounded committed-HEAD inspection", () => {
     expect(() => snapshot.files).toThrow("released");
   });
 
+  it("snapshotReleasedOnEveryFailurePath", async () => {
+    const tree = new TreeTransport([
+      json(200, [{ sha: "a".repeat(40) }]),
+      json(200, {
+        truncated: false,
+        tree: [
+          { path: ".env", type: "blob", sha: "1".repeat(40), size: 6 },
+          { path: "app.ts", type: "blob", sha: "2".repeat(40), size: 6 },
+        ],
+      }),
+    ]);
+    const permit = await issuePermit(tree);
+    const first = new TextEncoder().encode("FIRST!");
+    const second = new TextEncoder().encode("SECOND");
+    const blobs: BlobStreamTransport = {
+      async *stream(url) {
+        await Promise.resolve();
+        if (url.endsWith("1".repeat(40))) {
+          yield first;
+          return;
+        }
+        yield second;
+        throw new Error("repository-controlled failure text");
+      },
+    };
+
+    await expect(new SnapshotReader(new AsyncSerialDispatcher(tree), blobs).read(permit)).rejects.toEqual(expect.objectContaining<Partial<SnapshotReadError>>({ reasonCode: "blob_failed" }));
+    expect(first).toEqual(new Uint8Array(6));
+    expect(second).toEqual(new Uint8Array(6));
+  });
+
   it("rejects invalid budgets and malformed Git tree responses", async () => {
     const dispatcher = new AsyncSerialDispatcher(new TreeTransport([]));
     const blobs = new BlobTransport({});
@@ -233,7 +264,7 @@ describe("bounded committed-HEAD inspection", () => {
       const tree = new TreeTransport([json(200, [{ sha: "a".repeat(40) }]), response]);
       const permit = await issuePermit(tree);
       const reader = new SnapshotReader(new AsyncSerialDispatcher(tree), blobs);
-      await expect(reader.read(permit)).rejects.toThrow(/Git tree (?:request failed|response)/u);
+      await expect(reader.read(permit)).rejects.toEqual(expect.objectContaining<Partial<SnapshotReadError>>({ reasonCode: "tree_failed" }));
     }
   });
 

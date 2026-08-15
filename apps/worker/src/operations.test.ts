@@ -21,12 +21,13 @@ describe("operational product contract", () => {
   });
 
   it("controlledFullStackStopsTheActualWebProcess", async () => {
-    const harness = await read("scripts/controlled-full-stack.mjs");
+    const [harness, dockerfile] = await Promise.all([read("scripts/controlled-full-stack.mjs"), read("deploy/web.Dockerfile")]);
     expect(harness).toContain("spawn(process.execPath");
-    expect(harness).toContain("vinext/dist/cli.js");
+    expect(harness).toContain("apps/web/node_modules/vinext/dist/cli.js");
     expect(harness).not.toContain('spawn(npmCommand, ["run", "start"');
     expect(harness).toContain('child.kill("SIGKILL")');
     expect(harness).toContain("await waitForChildExit(child, 5_000)");
+    expect(dockerfile).toContain('ENTRYPOINT ["node", "apps/web/node_modules/vinext/dist/cli.js"');
   });
 
   it("declares API, worker, web, and PostgreSQL services with health checks", async () => {

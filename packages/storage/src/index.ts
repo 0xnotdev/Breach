@@ -3,12 +3,15 @@ import type { Pool, PoolClient } from "pg";
 import {
   candidateSelectionReasonSchema,
   candidateStateSchema,
+  canTransitionCandidate,
   coverageSchema,
+  lifecycleReasonCodeSchema,
   reviewStateSchema,
   sanitizedFindingSchema,
   type CandidateState,
   type CandidateSelectionReason,
   type Coverage,
+  type LifecycleReasonCode,
   type ReviewState,
   type SanitizedFinding,
 } from "@breach/contracts";
@@ -28,6 +31,10 @@ export interface StoredCandidate extends Omit<DiscoveredCandidate, "candidateSta
   candidateState: CandidateState;
   commitCheckAttempts: number;
   nextCommitCheckAt: Date | null;
+  firstCommitDetectedAt: Date | null;
+  headSha: string | null;
+  lastScanStatus: CandidateState | null;
+  lifecycleReasonCode: LifecycleReasonCode | null;
 }
 
 export interface StoredStateEvent {
@@ -36,6 +43,7 @@ export interface StoredStateEvent {
   fromState: CandidateState | null;
   toState: CandidateState;
   occurredAt: Date;
+  reasonCode: LifecycleReasonCode | null;
 }
 
 export interface MetadataStore {
@@ -51,7 +59,7 @@ export interface MetadataStore {
   ): Promise<void>;
   getDiscoveryCursor(streamName: string): Promise<number | null>;
   getCandidate(repoId: number): Promise<StoredCandidate | null>;
-  transitionCandidate(repoId: number, nextState: CandidateState): Promise<StoredCandidate>;
+  transitionCandidate(repoId: number, nextState: CandidateState, reasonCode?: LifecycleReasonCode): Promise<StoredCandidate>;
   rateLimitCandidate(repoId: number, retryAt: Date, attempt: number): Promise<void>;
   releaseDueRateLimits(now: Date): Promise<number>;
   getStateEvents(repoId: number): Promise<StoredStateEvent[]>;
@@ -62,7 +70,7 @@ export interface MetadataStore {
     reviewState: Exclude<ReviewState, "UNREVIEWED">,
     reviewNote?: string,
   ): Promise<SanitizedFinding>;
-  transition(repoId: number, nextState: CandidateState): Promise<void>;
+  transition(repoId: number, nextState: CandidateState, reasonCode?: LifecycleReasonCode): Promise<void>;
   scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number): Promise<void>;
   claimScan(repoId: number, headSha: string, startedAt: Date): Promise<boolean>;
   saveFindings(findings: readonly SanitizedFinding[]): Promise<void>;
@@ -71,6 +79,7 @@ export interface MetadataStore {
     headSha: string,
     state: CandidateState,
     coverage: Coverage,
+    reasonCode?: LifecycleReasonCode,
   ): Promise<void>;
   recordMetric(
     name: string,
@@ -80,30 +89,48 @@ export interface MetadataStore {
   getScan(
     repoId: number,
     headSha: string,
-  ): Promise<{ state: CandidateState; coverage: Coverage } | null>;
+  ): Promise<{ state: CandidateState; coverage: Coverage; failureReasonCode: LifecycleReasonCode | null } | null>;
   getMetricSamples(
     name: string,
   ): Promise<Array<{ value: number; labels: Readonly<Record<string, string>> }>>;
 }
 
-const allowedTransitions: Readonly<Record<CandidateState, readonly CandidateState[]>> = {
-  DISCOVERED: ["SKIPPED", "WAITING_FOR_COMMIT"],
-  SKIPPED: [],
-  WAITING_FOR_COMMIT: ["READY", "FAILED", "RATE_LIMITED"],
-  READY: ["SCANNING", "FAILED", "RATE_LIMITED"],
-  SCANNING: [
-    "SCANNED_NO_FINDINGS",
-    "SCANNED_FINDINGS",
-    "PARTIAL",
-    "FAILED",
-    "RATE_LIMITED",
-  ],
-  SCANNED_NO_FINDINGS: [],
-  SCANNED_FINDINGS: [],
-  PARTIAL: [],
-  FAILED: [],
-  RATE_LIMITED: ["WAITING_FOR_COMMIT", "READY", "SCANNING", "FAILED"],
+const completionReason: Readonly<Record<"SCANNED_NO_FINDINGS" | "SCANNED_FINDINGS", LifecycleReasonCode>> = {
+  SCANNED_NO_FINDINGS: "scan_completed_no_findings",
+  SCANNED_FINDINGS: "scan_completed_findings",
 };
+
+function partialReasonCode(coverage: Coverage): LifecycleReasonCode {
+  if (coverage.analysisPartialReasons.includes("timeout")) return "analysis_timeout";
+  if (coverage.snapshotPartialReasons.includes("tree_truncated")) return "tree_truncated";
+  if (coverage.snapshotPartialReasons.includes("oversized_files_excluded")) return "blob_oversize";
+  if (coverage.snapshotPartialReasons.some((reason) => reason.endsWith("budget_exhausted"))) return "budget_exhausted";
+  return "scan_partial";
+}
+
+function initialScanCoverage(headSha: string): Coverage {
+  return coverageSchema.parse({
+    ref: `HEAD@${headSha}`,
+    historyScanned: false,
+    scanComplete: false,
+    snapshotComplete: false,
+    analysisComplete: false,
+    analysisPartial: true,
+    snapshotPartialReasons: [],
+    analysisPartialReasons: [],
+    filesSeen: 0,
+    filesEligible: 0,
+    filesAnalyzed: 0,
+    bytesInspected: 0,
+    skippedBinary: 0,
+    skippedGenerated: 0,
+    skippedOversize: 0,
+    skippedBudget: 0,
+    skippedUnsupported: 0,
+    treeTruncated: false,
+    languagesModeled: [],
+  });
+}
 
 function assertSafeReviewNote(note: string | undefined): void {
   if (note === undefined) return;
@@ -134,6 +161,20 @@ async function inTransaction<T>(pool: Pool, run: (client: PoolClient) => Promise
 
 export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
   await assertMigrationsCurrent(pool);
+  const claimLocks = new Map<string, Promise<void>>();
+  const withClaimLock = async <T>(key: string, run: () => Promise<T>): Promise<T> => {
+    const previous = claimLocks.get(key) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    claimLocks.set(key, current);
+    await previous;
+    try {
+      return await run();
+    } finally {
+      release();
+      if (claimLocks.get(key) === current) claimLocks.delete(key);
+    }
+  };
 
   const store: MetadataStore = {
     async bootstrapDiscovery(streamName, frontierCursor, bootstrappedAt) {
@@ -207,10 +248,11 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
 
       await inTransaction(pool, async (client) => {
         for (const candidate of candidates) {
+          const admissionReason: LifecycleReasonCode = candidate.candidateState === "WAITING_FOR_COMMIT" ? "commit_gate_pending" : "candidate_not_admitted";
           await client.query(
             `INSERT INTO repository_candidates
-              (repo_id, full_name, html_url, discovered_at, priority_score, candidate_state, selection_reason)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+              (repo_id, full_name, html_url, discovered_at, priority_score, candidate_state, selection_reason, lifecycle_reason_code)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (repo_id) DO NOTHING`,
             [
               candidate.repoId,
@@ -220,6 +262,7 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
               candidate.priorityScore,
               candidate.candidateState,
               candidate.selectionReason,
+              admissionReason,
             ],
           );
           await client.query(
@@ -232,9 +275,9 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
           );
           if (initialEvent.rows.length === 0) {
             await client.query(
-              `INSERT INTO state_events (repo_id, from_state, to_state, occurred_at)
-               VALUES ($1, NULL, 'DISCOVERED', $2), ($1, 'DISCOVERED', $3, $2)`,
-              [candidate.repoId, candidate.discoveredAt, candidate.candidateState],
+              `INSERT INTO state_events (repo_id, from_state, to_state, occurred_at, reason_code)
+               VALUES ($1, NULL, 'DISCOVERED', $2, 'repository_discovered'), ($1, 'DISCOVERED', $3, $2, $4)`,
+              [candidate.repoId, candidate.discoveredAt, candidate.candidateState, admissionReason],
             );
           }
         }
@@ -293,6 +336,10 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         selection_reason: string;
         commit_check_attempts: number;
         next_commit_check_at: Date | null;
+        first_commit_detected_at: Date | null;
+        head_sha: string | null;
+        last_scan_status: string | null;
+        lifecycle_reason_code: string | null;
       }>("SELECT * FROM repository_candidates WHERE repo_id = $1", [repoId]);
       const row = result.rows[0];
       if (row === undefined) return null;
@@ -306,25 +353,34 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         selectionReason: candidateSelectionReasonSchema.parse(row.selection_reason),
         commitCheckAttempts: row.commit_check_attempts,
         nextCommitCheckAt: row.next_commit_check_at === null ? null : new Date(row.next_commit_check_at),
+        firstCommitDetectedAt: row.first_commit_detected_at === null ? null : new Date(row.first_commit_detected_at),
+        headSha: row.head_sha,
+        lastScanStatus: row.last_scan_status === null ? null : candidateStateSchema.parse(row.last_scan_status),
+        lifecycleReasonCode: row.lifecycle_reason_code === null ? null : lifecycleReasonCodeSchema.parse(row.lifecycle_reason_code),
       };
     },
 
-    async transitionCandidate(repoId, nextState) {
+    async transitionCandidate(repoId, nextState, reasonCode) {
       const parsedNext: CandidateState = candidateStateSchema.parse(nextState);
-      const current = await store.getCandidate(repoId);
-      if (current === null) throw new Error(`Candidate ${String(repoId)} does not exist`);
-      if (!allowedTransitions[current.candidateState].includes(parsedNext)) {
-        throw new Error(`Illegal candidate transition: ${current.candidateState} -> ${parsedNext}`);
-      }
-
+      const parsedReason = reasonCode === undefined ? null : lifecycleReasonCodeSchema.parse(reasonCode);
       await inTransaction(pool, async (client) => {
+        const current = await client.query<{ candidate_state: string }>(
+          "SELECT candidate_state FROM repository_candidates WHERE repo_id = $1 FOR UPDATE",
+          [repoId],
+        );
+        const row = current.rows[0];
+        if (row === undefined) throw new Error(`Candidate ${String(repoId)} does not exist`);
+        const currentState = candidateStateSchema.parse(row.candidate_state);
+        if (!canTransitionCandidate(currentState, parsedNext)) {
+          throw new Error(`Illegal candidate transition: ${currentState} -> ${parsedNext}`);
+        }
         await client.query(
-          "UPDATE repository_candidates SET candidate_state = $1 WHERE repo_id = $2",
-          [parsedNext, repoId],
+          "UPDATE repository_candidates SET candidate_state = $1, lifecycle_reason_code = $2 WHERE repo_id = $3",
+          [parsedNext, parsedReason, repoId],
         );
         await client.query(
-          "INSERT INTO state_events (repo_id, from_state, to_state) VALUES ($1, $2, $3)",
-          [repoId, current.candidateState, parsedNext],
+          "INSERT INTO state_events (repo_id, from_state, to_state, reason_code) VALUES ($1, $2, $3, $4)",
+          [repoId, currentState, parsedNext, parsedReason],
         );
       });
       const updated = await store.getCandidate(repoId);
@@ -344,17 +400,18 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         const row = current.rows[0];
         if (row === undefined) throw new Error(`Candidate ${String(repoId)} does not exist`);
         const currentState = candidateStateSchema.parse(row.candidate_state);
-        if (!allowedTransitions[currentState].includes("RATE_LIMITED")) {
+        if (!canTransitionCandidate(currentState, "RATE_LIMITED")) {
           throw new Error(`Illegal candidate transition: ${currentState} -> RATE_LIMITED`);
         }
         await client.query(
           `UPDATE repository_candidates SET candidate_state = 'RATE_LIMITED',
-             next_commit_check_at = $1, commit_check_attempts = $2
+             next_commit_check_at = $1, commit_check_attempts = $2,
+             lifecycle_reason_code = 'github_rate_limited'
            WHERE repo_id = $3`,
           [retryAt, attempt, repoId],
         );
         await client.query(
-          "INSERT INTO state_events (repo_id, from_state, to_state) VALUES ($1, $2, 'RATE_LIMITED')",
+          "INSERT INTO state_events (repo_id, from_state, to_state, reason_code) VALUES ($1, $2, 'RATE_LIMITED', 'github_rate_limited')",
           [repoId, currentState],
         );
       });
@@ -374,12 +431,13 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         for (const row of due.rows) {
           await client.query(
             `UPDATE repository_candidates
-             SET candidate_state = 'WAITING_FOR_COMMIT', next_commit_check_at = NULL
+             SET candidate_state = 'WAITING_FOR_COMMIT', next_commit_check_at = NULL,
+                 lifecycle_reason_code = 'commit_gate_pending'
              WHERE repo_id = $1`,
             [row.repo_id],
           );
           await client.query(
-            "INSERT INTO state_events (repo_id, from_state, to_state, occurred_at) VALUES ($1, 'RATE_LIMITED', 'WAITING_FOR_COMMIT', $2)",
+            "INSERT INTO state_events (repo_id, from_state, to_state, occurred_at, reason_code) VALUES ($1, 'RATE_LIMITED', 'WAITING_FOR_COMMIT', $2, 'commit_gate_pending')",
             [row.repo_id, now],
           );
         }
@@ -394,8 +452,9 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         from_state: string | null;
         to_state: string;
         occurred_at: Date;
+        reason_code: string | null;
       }>(
-        `SELECT event_id, repo_id, from_state, to_state, occurred_at FROM state_events
+        `SELECT event_id, repo_id, from_state, to_state, occurred_at, reason_code FROM state_events
          WHERE repo_id = $1 ORDER BY event_id`,
         [repoId],
       );
@@ -405,6 +464,7 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         fromState: row.from_state === null ? null : candidateStateSchema.parse(row.from_state),
         toState: candidateStateSchema.parse(row.to_state),
         occurredAt: new Date(row.occurred_at),
+        reasonCode: row.reason_code === null ? null : lifecycleReasonCodeSchema.parse(row.reason_code),
       }));
     },
 
@@ -458,8 +518,8 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
       return updated;
     },
 
-    async transition(repoId, nextState) {
-      await store.transitionCandidate(repoId, nextState);
+    async transition(repoId, nextState, reasonCode) {
+      await store.transitionCandidate(repoId, nextState, reasonCode);
     },
 
     async scheduleCommitCheck(repoId, nextCheckAt, attempt) {
@@ -479,40 +539,91 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         throw new Error("Invalid scan claim");
       }
       const claimToken = randomUUID();
-      await pool.query(
-        `INSERT INTO scans (scan_id, repo_id, head_sha, claim_token, coverage, state, started_at)
-         VALUES ($1, $2, $3, $4, $5, 'SCANNING', $6)
-         ON CONFLICT (repo_id, head_sha) DO NOTHING
-         RETURNING scan_id`,
-        [
-          `${String(repoId)}:${headSha}`,
-          repoId,
-          headSha,
-          claimToken,
-          JSON.stringify({}),
-          startedAt,
-        ],
-      );
-      const claimed = await pool.query<{ claim_token: string }>(
-        "SELECT claim_token FROM scans WHERE repo_id = $1 AND head_sha = $2",
-        [repoId, headSha],
-      );
-      return claimed.rows[0]?.claim_token === claimToken;
+      return withClaimLock(`${String(repoId)}:${headSha}`, () => inTransaction(pool, async (client) => {
+        const candidate = await client.query<{ candidate_state: string }>(
+          "SELECT candidate_state FROM repository_candidates WHERE repo_id = $1 FOR UPDATE",
+          [repoId],
+        );
+        const row = candidate.rows[0];
+        if (row === undefined) throw new Error(`Candidate ${String(repoId)} does not exist`);
+        const currentState = candidateStateSchema.parse(row.candidate_state);
+        if (currentState !== "WAITING_FOR_COMMIT" && currentState !== "READY") {
+          const existing = await client.query("SELECT scan_id FROM scans WHERE repo_id = $1 AND head_sha = $2", [repoId, headSha]);
+          if (existing.rows.length > 0) return false;
+          throw new Error(`Illegal candidate transition: ${currentState} -> SCANNING`);
+        }
+        const claimed = await client.query(
+          `INSERT INTO scans (scan_id, repo_id, head_sha, claim_token, coverage, state, started_at)
+           VALUES ($1, $2, $3, $4, $5, 'SCANNING', $6)
+           ON CONFLICT (repo_id, head_sha) DO NOTHING
+           RETURNING scan_id`,
+          [`${String(repoId)}:${headSha}`, repoId, headSha, claimToken, JSON.stringify(initialScanCoverage(headSha)), startedAt],
+        );
+        if (claimed.rows.length === 0) return false;
+        if (currentState === "WAITING_FOR_COMMIT") {
+          await client.query(
+            "INSERT INTO state_events (repo_id, from_state, to_state, occurred_at, reason_code) VALUES ($1, 'WAITING_FOR_COMMIT', 'READY', $2, 'commit_observed')",
+            [repoId, startedAt],
+          );
+        }
+        await client.query(
+          `UPDATE repository_candidates
+           SET candidate_state = 'SCANNING', first_commit_detected_at = COALESCE(first_commit_detected_at, $1),
+               head_sha = $2, last_scan_status = 'SCANNING', lifecycle_reason_code = 'scan_started'
+           WHERE repo_id = $3`,
+          [startedAt, headSha, repoId],
+        );
+        await client.query(
+          "INSERT INTO state_events (repo_id, from_state, to_state, occurred_at, reason_code) VALUES ($1, 'READY', 'SCANNING', $2, 'scan_started')",
+          [repoId, startedAt],
+        );
+        return true;
+      }));
     },
 
     async saveFindings(findings) {
       for (const finding of findings) await store.saveFinding(finding);
     },
 
-    async completeScan(repoId, headSha, state, coverage) {
+    async completeScan(repoId, headSha, state, coverage, reasonCode) {
       const safeState = candidateStateSchema.parse(state);
       const safeCoverage = coverageSchema.parse(coverage);
-      await pool.query(
-        `UPDATE scans
-         SET coverage = $1, state = $2, completed_at = CURRENT_TIMESTAMP
-         WHERE repo_id = $3 AND head_sha = $4`,
-        [JSON.stringify(safeCoverage), safeState, repoId, headSha],
-      );
+      if (!["SCANNED_NO_FINDINGS", "SCANNED_FINDINGS", "PARTIAL", "FAILED"].includes(safeState)) throw new Error("Invalid terminal scan state");
+      if (safeState === "FAILED" && reasonCode === undefined) throw new Error("Failed scan requires a reason code");
+      const safeReason = reasonCode === undefined
+        ? safeState === "PARTIAL" ? partialReasonCode(safeCoverage) : completionReason[safeState as keyof typeof completionReason]
+        : lifecycleReasonCodeSchema.parse(reasonCode);
+      await inTransaction(pool, async (client) => {
+        const scan = await client.query<{ state: string }>(
+          "SELECT state FROM scans WHERE repo_id = $1 AND head_sha = $2 FOR UPDATE",
+          [repoId, headSha],
+        );
+        const scanRow = scan.rows[0];
+        if (scanRow === undefined) throw new Error("Claimed scan does not exist");
+        const currentScanState = candidateStateSchema.parse(scanRow.state);
+        if (currentScanState === safeState) return;
+        if (currentScanState !== "SCANNING") throw new Error(`Illegal scan completion: ${currentScanState} -> ${safeState}`);
+        const candidate = await client.query<{ candidate_state: string }>(
+          "SELECT candidate_state FROM repository_candidates WHERE repo_id = $1 FOR UPDATE",
+          [repoId],
+        );
+        const candidateState = candidateStateSchema.parse(candidate.rows[0]?.candidate_state);
+        if (candidateState !== "SCANNING") throw new Error(`Illegal candidate transition: ${candidateState} -> ${safeState}`);
+        await client.query(
+          `UPDATE scans SET coverage = $1, state = $2, completed_at = CURRENT_TIMESTAMP,
+             failure_reason_code = $3 WHERE repo_id = $4 AND head_sha = $5`,
+          [JSON.stringify(safeCoverage), safeState, safeState === "FAILED" ? safeReason : null, repoId, headSha],
+        );
+        await client.query(
+          `UPDATE repository_candidates SET candidate_state = $1, last_scan_status = $1,
+             lifecycle_reason_code = $2 WHERE repo_id = $3`,
+          [safeState, safeReason, repoId],
+        );
+        await client.query(
+          "INSERT INTO state_events (repo_id, from_state, to_state, reason_code) VALUES ($1, 'SCANNING', $2, $3)",
+          [repoId, safeState, safeReason],
+        );
+      });
     },
 
     async recordMetric(name, value, labels) {
@@ -535,8 +646,8 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
     },
 
     async getScan(repoId, headSha) {
-      const result = await pool.query<{ state: string; coverage: unknown }>(
-        "SELECT state, coverage FROM scans WHERE repo_id = $1 AND head_sha = $2",
+      const result = await pool.query<{ state: string; coverage: unknown; failure_reason_code: string | null }>(
+        "SELECT state, coverage, failure_reason_code FROM scans WHERE repo_id = $1 AND head_sha = $2",
         [repoId, headSha],
       );
       const row = result.rows[0];
@@ -545,6 +656,7 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         : {
             state: candidateStateSchema.parse(row.state),
             coverage: coverageSchema.parse(row.coverage),
+            failureReasonCode: row.failure_reason_code === null ? null : lifecycleReasonCodeSchema.parse(row.failure_reason_code),
           };
     },
 

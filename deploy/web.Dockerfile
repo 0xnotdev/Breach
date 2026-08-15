@@ -14,4 +14,4 @@ COPY --from=build --chown=breach:breach /opt/breach/apps/web ./apps/web
 USER breach
 EXPOSE 3000
 WORKDIR /opt/breach/apps/web
-ENTRYPOINT ["node", "node_modules/vinext/dist/cli.js", "start", "--port", "3000", "--hostname", "0.0.0.0"]
+ENTRYPOINT ["node", "apps/web/node_modules/vinext/dist/cli.js", "start", "--port", "3000", "--hostname", "0.0.0.0"]

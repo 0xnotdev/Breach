@@ -13,7 +13,52 @@ export const candidateStateSchema = z.enum([
   "RATE_LIMITED",
 ]);
 
+export type CandidateState = z.infer<typeof candidateStateSchema>;
+
+export const candidateTransitionGraph: Readonly<Record<CandidateState, readonly CandidateState[]>> = {
+  DISCOVERED: ["SKIPPED", "WAITING_FOR_COMMIT"],
+  SKIPPED: [],
+  WAITING_FOR_COMMIT: ["READY", "FAILED", "RATE_LIMITED"],
+  READY: ["SCANNING", "FAILED"],
+  SCANNING: ["SCANNED_NO_FINDINGS", "SCANNED_FINDINGS", "PARTIAL", "FAILED"],
+  SCANNED_NO_FINDINGS: [],
+  SCANNED_FINDINGS: [],
+  PARTIAL: [],
+  FAILED: [],
+  RATE_LIMITED: ["WAITING_FOR_COMMIT", "FAILED"],
+};
+
+export const terminalCandidateStates = ["SKIPPED", "SCANNED_NO_FINDINGS", "SCANNED_FINDINGS", "PARTIAL", "FAILED"] as const satisfies readonly CandidateState[];
+
+export function canTransitionCandidate(from: CandidateState, to: CandidateState): boolean {
+  return candidateTransitionGraph[from].includes(to);
+}
+
 export const candidateSelectionReasonSchema = z.enum(["selected", "score", "capacity"]);
+
+export const lifecycleReasonCodeSchema = z.enum([
+  "repository_discovered",
+  "candidate_not_admitted",
+  "commit_gate_pending",
+  "commit_observed",
+  "scan_started",
+  "scan_completed_no_findings",
+  "scan_completed_findings",
+  "scan_partial",
+  "scan_failed",
+  "empty_repo",
+  "github_rate_limited",
+  "github_unavailable",
+  "repo_gone",
+  "tree_failed",
+  "tree_truncated",
+  "blob_failed",
+  "blob_oversize",
+  "budget_exhausted",
+  "parser_failed",
+  "analysis_timeout",
+  "database_failed",
+]);
 
 export const reviewStateSchema = z.enum([
   "UNREVIEWED",
@@ -40,6 +85,8 @@ export const snapshotPartialReasonSchema = z.enum([
   "file_count_budget_exhausted",
   "repository_byte_budget_exhausted",
   "wall_clock_budget_exhausted",
+  "tree_failed",
+  "blob_failed",
 ]);
 
 export const analysisPartialReasonSchema = z.enum([
@@ -47,6 +94,7 @@ export const analysisPartialReasonSchema = z.enum([
   "timeout",
   "graph_node_limit",
   "graph_depth_limit",
+  "parser_failed",
 ]);
 
 export type ExploitabilityLevel = z.infer<typeof exploitabilityLevelSchema>;
@@ -188,8 +236,8 @@ export const sanitizedFindingSchema = z
   })
   .strict();
 
-export type CandidateState = z.infer<typeof candidateStateSchema>;
 export type CandidateSelectionReason = z.infer<typeof candidateSelectionReasonSchema>;
+export type LifecycleReasonCode = z.infer<typeof lifecycleReasonCodeSchema>;
 export type Coverage = z.infer<typeof coverageSchema>;
 export type AnalysisPartialReason = z.infer<typeof analysisPartialReasonSchema>;
 export type SnapshotPartialReason = z.infer<typeof snapshotPartialReasonSchema>;

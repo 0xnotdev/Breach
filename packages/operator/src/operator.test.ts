@@ -275,7 +275,7 @@ describe("sanitized operator HTTP/SSE interface", () => {
     const reader = response.body?.getReader();
     if (reader === undefined) throw new Error("Stream body is missing");
 
-    data.events.push({ eventId: 2, repoId: 1402, fullName: "fixture/later", state: "READY", occurredAt: "2026-08-15T12:00:00.000Z" });
+    data.events.push({ eventId: 2, repoId: 1402, fullName: "fixture/later", state: "READY", occurredAt: "2026-08-15T12:00:00.000Z", reasonCode: "commit_observed" });
     const chunk = await reader.read();
     expect(chunk.done).toBe(false);
     const text = new TextDecoder().decode(chunk.value);

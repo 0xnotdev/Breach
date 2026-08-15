@@ -142,6 +142,32 @@ describe("operator API runtime", () => {
     }
   });
 
+  it("bridges bodyless responses and sanitizes handler failures", async () => {
+    const server = createServer((request, response) => {
+      void serveNodeRequest(request, response, (incoming) => {
+        if (new URL(incoming.url).pathname === "/bodyless") return Promise.resolve(new Response(null, { status: 204 }));
+        if (new URL(incoming.url).pathname === "/broken-stream") {
+          return Promise.resolve(new Response(new ReadableStream({ pull(controller) { controller.error(new Error("unsafe streamed exception text")); } })));
+        }
+        return Promise.reject(new Error("unsafe upstream exception text"));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (typeof address !== "object" || address === null) throw new Error("API bridge test server did not bind");
+    try {
+      const bodyless = await fetch(`http://127.0.0.1:${String(address.port)}/bodyless`);
+      expect(bodyless.status).toBe(204);
+      expect(await bodyless.text()).toBe("");
+      const failed = await fetch(`http://127.0.0.1:${String(address.port)}/failed`);
+      expect(failed.status).toBe(400);
+      expect(await failed.json()).toEqual({ error: "invalid_request" });
+      await expect(fetch(`http://127.0.0.1:${String(address.port)}/broken-stream`).then((response) => response.text())).rejects.toThrow();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => { if (error === undefined) resolve(); else reject(error); }));
+    }
+  });
+
   it("validates least-privilege runtime configuration", () => {
     expect(readApiConfig({ DATABASE_URL: "postgresql://breach@postgres/breach", OPERATOR_TOKEN: "operator-token-32-bytes-minimum", API_PORT: "8080" })).toEqual({ databaseUrl: "postgresql://breach@postgres/breach", operatorToken: "operator-token-32-bytes-minimum", port: 8080 });
     expect(() => readApiConfig({})).toThrow("DATABASE_URL");

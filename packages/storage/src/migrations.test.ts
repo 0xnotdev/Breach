@@ -27,10 +27,10 @@ describe("versioned metadata migrations", () => {
   });
 
   it("applies each immutable migration once and detects changed history", async () => {
-    await expect(runMigrations(pool)).resolves.toEqual({ applied: [1, 2, 3, 4], currentVersion: 4 });
-    await expect(runMigrations(pool)).resolves.toEqual({ applied: [], currentVersion: 4 });
+    await expect(runMigrations(pool)).resolves.toEqual({ applied: [1, 2, 3, 4, 5], currentVersion: 5 });
+    await expect(runMigrations(pool)).resolves.toEqual({ applied: [], currentVersion: 5 });
     const versions = await pool.query<{ version: number; checksum: string }>("SELECT version, checksum FROM schema_migrations ORDER BY version");
-    expect(versions.rows).toHaveLength(4);
+    expect(versions.rows).toHaveLength(5);
     expect(versions.rows.every((row) => /^[a-f0-9]{64}$/u.test(row.checksum))).toBe(true);
 
     await pool.query("UPDATE schema_migrations SET checksum = $1 WHERE version = 2", ["0".repeat(64)]);
@@ -42,7 +42,7 @@ describe("versioned metadata migrations", () => {
     await pool.query(legacy);
     await pool.query("INSERT INTO repository_candidates(repo_id, full_name, html_url, discovered_at, priority_score, candidate_state, selection_reason) VALUES (42, 'legacy/repository', 'https://github.com/legacy/repository', CURRENT_TIMESTAMP, 1, 'SKIPPED', 'score')");
 
-    await expect(runMigrations(pool)).resolves.toMatchObject({ currentVersion: 4 });
+    await expect(runMigrations(pool)).resolves.toMatchObject({ currentVersion: 5 });
     const candidate = await pool.query<{ full_name: string; selection_reason: string }>("SELECT full_name, selection_reason FROM repository_candidates WHERE repo_id = 42");
     expect(candidate.rows[0]).toEqual({ full_name: "legacy/repository", selection_reason: "score" });
     await expect(pool.query("SELECT * FROM metric_samples")).resolves.toBeDefined();
@@ -52,7 +52,7 @@ describe("versioned metadata migrations", () => {
     await expect(assertMigrationsCurrent(pool)).rejects.toThrow("not migrated");
     await expect(createMetadataStore(pool)).rejects.toThrow("not migrated");
     await runMigrations(pool);
-    await pool.query("DELETE FROM schema_migrations WHERE version = 4");
+    await pool.query("DELETE FROM schema_migrations WHERE version = 5");
     await expect(assertMigrationsCurrent(pool)).rejects.toThrow("not current");
   });
 });

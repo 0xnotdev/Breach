@@ -1,9 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 import {
   candidateStateSchema,
+  lifecycleReasonCodeSchema,
   reviewStateSchema,
   sanitizedFindingSchema,
   type CandidateState,
+  type LifecycleReasonCode,
   type ReviewState,
   type SanitizedFinding,
 } from "@breach/contracts";
@@ -14,6 +16,7 @@ export interface StreamEvent {
   readonly fullName: string;
   readonly state: CandidateState;
   readonly occurredAt: string;
+  readonly reasonCode?: LifecycleReasonCode;
 }
 
 export interface SystemMetric {
@@ -144,7 +147,7 @@ function safeGitHubLink(finding: SanitizedFinding): string {
   return `${finding.repository.url}/blob/${finding.revision.sha}/${encodedPath}#L${String(node.line)}`;
 }
 
-const eventReasonCodes: Readonly<Record<CandidateState, string>> = {
+const eventReasonCodes: Readonly<Record<CandidateState, LifecycleReasonCode>> = {
   DISCOVERED: "repository_discovered",
   SKIPPED: "candidate_not_admitted",
   WAITING_FOR_COMMIT: "commit_gate_pending",
@@ -157,7 +160,7 @@ const eventReasonCodes: Readonly<Record<CandidateState, string>> = {
   RATE_LIMITED: "github_rate_limited",
 };
 
-function sanitizeEvent(value: StreamEvent): StreamEvent & { readonly reasonCode: string } {
+function sanitizeEvent(value: StreamEvent): StreamEvent & { readonly reasonCode: LifecycleReasonCode } {
   if (
     !Number.isSafeInteger(value.eventId) || value.eventId < 1 ||
     !Number.isSafeInteger(value.repoId) || value.repoId < 1 ||
@@ -168,13 +171,14 @@ function sanitizeEvent(value: StreamEvent): StreamEvent & { readonly reasonCode:
   }
   const state = candidateStateSchema.safeParse(value.state);
   if (!state.success) throw new Error("Invalid event metadata");
+  const reasonCode = value.reasonCode === undefined ? eventReasonCodes[state.data] : lifecycleReasonCodeSchema.parse(value.reasonCode);
   return {
     eventId: value.eventId,
     repoId: value.repoId,
     fullName: value.fullName,
     state: state.data,
     occurredAt: value.occurredAt,
-    reasonCode: eventReasonCodes[state.data],
+    reasonCode,
   };
 }
 
