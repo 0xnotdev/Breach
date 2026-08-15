@@ -83,8 +83,20 @@ export async function startApi(config = readApiConfig(process.env), dependencies
   const handler = createApiHandler(new PostgresOperatorDataSource(pool, store), config.operatorToken, async () => { await pool.query("SELECT 1"); return true; });
   const server = createServer((request, response) => { void serveNodeRequest(request, response, handler); });
   await new Promise<void>((resolve) => server.listen(config.port, "0.0.0.0", resolve));
-  const close = async () => { await new Promise<void>((resolve, reject) => server.close((error) => { if (error) reject(error); else resolve(); })); if (ownsPool) await pool.end(); };
-  process.once("SIGTERM", () => { void close(); }); process.once("SIGINT", () => { void close(); });
+  let closePromise: Promise<void> | null = null;
+  const onSignal = () => { void close().catch(() => { process.stderr.write("Breach API shutdown failed\n"); process.exitCode = 1; }); };
+  const close = (): Promise<void> => {
+    if (closePromise !== null) return closePromise;
+    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onSignal);
+    closePromise = (async () => {
+      if (server.listening) await new Promise<void>((resolve, reject) => server.close((error) => { if (error) reject(error); else resolve(); }));
+      if (ownsPool) await pool.end();
+    })();
+    return closePromise;
+  };
+  process.once("SIGTERM", onSignal);
+  process.once("SIGINT", onSignal);
   return { server, pool, close };
 }
 

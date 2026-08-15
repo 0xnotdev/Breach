@@ -216,6 +216,7 @@ describe("operator API runtime", () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
     const pool: Pool = new adapter.Pool();
     const token = "operator-token-32-bytes-minimum";
+    const signalListeners = { sigterm: process.listenerCount("SIGTERM"), sigint: process.listenerCount("SIGINT") };
     try {
       await runMigrations(pool);
       const store = await createMetadataStore(pool);
@@ -237,7 +238,10 @@ describe("operator API runtime", () => {
         expect(await findings.json()).toEqual({ findings: [] });
       } finally {
         await api.close();
+        await api.close();
       }
+      expect(process.listenerCount("SIGTERM")).toBe(signalListeners.sigterm);
+      expect(process.listenerCount("SIGINT")).toBe(signalListeners.sigint);
       await expect(pool.query("SELECT 1")).resolves.toMatchObject({ rowCount: 1 });
     } finally {
       await pool.end();

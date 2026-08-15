@@ -52,6 +52,7 @@ describe("worker scheduler", () => {
     };
     let ended = false;
     const pool = { end: () => { ended = true; return Promise.resolve(); } } as unknown as Pool;
+    const signalListeners = { sigterm: process.listenerCount("SIGTERM"), sigint: process.listenerCount("SIGINT") };
     const worker = await startWorker({ config, pool, runtime });
     const address = worker.health.address();
     if (typeof address !== "object" || address === null) throw new Error("Worker health server did not bind");
@@ -65,8 +66,11 @@ describe("worker scheduler", () => {
       expect((await fetch(`http://127.0.0.1:${String(address.port)}/unknown`)).status).toBe(503);
     } finally {
       await worker.stop();
+      await worker.stop();
     }
     expect(ended).toBe(false);
+    expect(process.listenerCount("SIGTERM")).toBe(signalListeners.sigterm);
+    expect(process.listenerCount("SIGINT")).toBe(signalListeners.sigint);
   });
 
   it("reports failed cycles and supports stopping before start", async () => {

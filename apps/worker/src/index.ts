@@ -115,12 +115,17 @@ export async function startWorker(dependencies: WorkerRuntimeDependencies = {}) 
   await new Promise<void>((resolve) => health.listen(config.healthPort, "0.0.0.0", resolve));
   scheduler.start();
   let stopPromise: Promise<void> | null = null;
-  const stop = async () => {
+  const onSignal = () => { void stop().catch(() => { process.stderr.write("Breach worker shutdown failed\n"); process.exitCode = 1; }); };
+  const stop = async (): Promise<void> => {
     if (stopPromise !== null) return stopPromise;
+    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onSignal);
     stopPromise = (async () => { await scheduler.stop(); await new Promise<void>((resolve) => health.close(() => { resolve(); })); if (ownsPool) await pool.end(); })();
     return stopPromise;
   };
-  process.once("SIGTERM", () => { void stop(); }); process.once("SIGINT", () => { void stop(); }); return { health, stop };
+  process.once("SIGTERM", onSignal);
+  process.once("SIGINT", onSignal);
+  return { health, stop };
 }
 
 const invokedPath = process.argv[1];
