@@ -838,3 +838,10 @@ This section is append-only. It records the red/green evidence for the productio
 - GitHub Actions run `31886430202` passed coverage, build, both migration invocations, controlled production worker analysis, PostgreSQL safety checks, real API/web startup, findings/filter/investigation/review/reload behavior, and delivery of a lifecycle event inserted after the SSE connection.
 - The harness then failed only because its exact-text repository locator correctly found two rows: discovery persistence emits both `DISCOVERED` and terminal `SKIPPED` events for the same candidate. Replaced the ambiguous locator with one scoped to an `article.stream-event` containing both the repository and `SKIPPED`, preserving the stronger requirement that the later terminal event reached the live UI.
 - Static syntax, lint, and tracked-secret checks pass for the corrected harness; the next clean CI run remains the authoritative PostgreSQL/full-stack validation.
+
+### 2026-08-15 18:46 IST — fix 30 published / fix 31 clean integration teardown
+
+- Published fix 30 as `dc3c77c61e139cee52388b0d9c75804bb1106b04` (`fix 30: scope full-stack stream assertion`). Local, remote-tracking, and advertised `main` matched; the worktree was clean.
+- GitHub Actions run `31886571874` completed the entire controlled PostgreSQL/API/web/Chromium contract and printed `Controlled full-stack validation passed (7 findings, migration v4)`. It then failed during cleanup because forced database deletion raced an integration-pool client whose end handshake was still completing, producing PostgreSQL `57P01` as an unhandled pool error.
+- Replaced `DROP DATABASE ... WITH (FORCE)` with bounded ordinary-drop retries only for PostgreSQL `55006` (database still in use). Cleanup now proves every client drains naturally and fails clearly if it does not; it never administratively terminates its own pool. The success line is emitted only after browser, web, API, pool, disposable database, and admin-pool cleanup all finish.
+- Static syntax, lint, and tracked-secret checks pass; the next fresh CI run will validate the strengthened teardown and continue into the production image builds.

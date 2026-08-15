@@ -59,6 +59,21 @@ async function stopChild(child) {
   if (child.exitCode === null) child.kill("SIGKILL");
 }
 
+async function dropDatabase(admin, databaseName) {
+  let latest;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await admin.query(`DROP DATABASE "${databaseName}"`);
+      return;
+    } catch (error) {
+      latest = error;
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "55006") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  throw latest instanceof Error ? latest : new Error("Controlled integration database did not drain");
+}
+
 function controlledFiles() {
   const encoder = new TextEncoder();
   const content = new Map([
@@ -84,6 +99,7 @@ async function main() {
   let api;
   let web;
   let browser;
+  let successMessage;
   const childOutput = [];
   const fixtureFiles = controlledFiles();
   try {
@@ -234,7 +250,7 @@ async function main() {
 
     const persistedReview = await pool.query("SELECT review_state, review_note FROM finding_reviews");
     assert.ok(persistedReview.rows.some((row) => row.review_state === "CONFIRMED" && row.review_note === "Controlled integration review confirms the modeled path."));
-    console.log(`Controlled full-stack validation passed (${String(findings.rows.length)} findings, migration v${String(secondMigration.currentVersion)}).`);
+    successMessage = `Controlled full-stack validation passed (${String(findings.rows.length)} findings, migration v${String(secondMigration.currentVersion)}).`;
   } catch (error) {
     if (childOutput.length > 0) process.stderr.write(`\nControlled web output:\n${childOutput.join("").slice(-8_000)}\n`);
     throw error;
@@ -243,10 +259,14 @@ async function main() {
     if (browser !== undefined) await browser.close().catch(() => undefined);
     if (web !== undefined) await stopChild(web);
     if (api !== undefined) await api.close().catch(() => undefined);
-    if (pool !== undefined) await pool.end().catch(() => undefined);
-    if (databaseCreated) await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`).catch(() => undefined);
-    await admin.end().catch(() => undefined);
+    if (pool !== undefined) await pool.end();
+    try {
+      if (databaseCreated) await dropDatabase(admin, databaseName);
+    } finally {
+      await admin.end();
+    }
   }
+  if (successMessage !== undefined) console.log(successMessage);
 }
 
 await main();
