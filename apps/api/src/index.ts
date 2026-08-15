@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import type { ReviewState, SanitizedFinding } from "@breach/contracts";
 import { OperatorRouter, type OperatorDataSource, type OperatorRouterOptions, type StreamEvent, type SystemMetric } from "@breach/operator";
 import { createMetadataStore } from "@breach/storage";
+import { readPostgresSystemMetrics } from "./system-metrics.js";
 
 export interface ApiConfig { databaseUrl: string; operatorToken: string; port: number }
 
@@ -51,8 +52,7 @@ export class PostgresOperatorDataSource implements OperatorDataSource {
     return Number(result.rows[0]?.latest_event_id ?? "0");
   }
   async getSystemMetrics(): Promise<readonly SystemMetric[]> {
-    const result = await this.pool.query<{ metric_name: string; metric_value: number; labels: Record<string, string> }>("SELECT DISTINCT ON (metric_name) metric_name, metric_value, labels FROM metric_samples ORDER BY metric_name, measured_at DESC LIMIT 500");
-    return result.rows.map((row) => ({ name: row.metric_name, value: row.metric_value, unit: row.labels.unit ?? "count" }));
+    return readPostgresSystemMetrics(this.pool);
   }
 }
 

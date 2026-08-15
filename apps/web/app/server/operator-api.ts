@@ -27,6 +27,12 @@ interface FindingDetailPayload {
   readonly openOnGitHub: string;
 }
 
+interface PublicSystemMetric {
+  readonly name: string;
+  readonly value: number;
+  readonly unit: string;
+}
+
 class OperatorProxyError extends Error {
   constructor(readonly status: number, readonly code: string) {
     super(code);
@@ -150,6 +156,21 @@ function parseFindingDetail(value: unknown): FindingDetailPayload {
     throw new OperatorProxyError(502, "invalid_upstream_response");
   }
   return { finding, openOnGitHub: value.openOnGitHub };
+}
+
+function parseSystemMetrics(value: unknown): { readonly metrics: readonly PublicSystemMetric[] } {
+  if (typeof value !== "object" || value === null || !("metrics" in value) || !Array.isArray(value.metrics) || value.metrics.length > 100) {
+    throw new OperatorProxyError(502, "invalid_upstream_response");
+  }
+  const metrics = value.metrics.map((item): PublicSystemMetric => {
+    if (typeof item !== "object" || item === null) throw new OperatorProxyError(502, "invalid_upstream_response");
+    const record = item as Record<string, unknown>;
+    if (typeof record.name !== "string" || !/^[a-z][a-z0-9_.]*$/u.test(record.name) || typeof record.value !== "number" || !Number.isFinite(record.value) || typeof record.unit !== "string" || !/^[a-z][a-z0-9_/]*$/u.test(record.unit)) {
+      throw new OperatorProxyError(502, "invalid_upstream_response");
+    }
+    return { name: record.name, value: record.value, unit: record.unit };
+  });
+  return { metrics };
 }
 
 function safeFindingId(id: string): string | null {
@@ -318,6 +339,14 @@ export async function proxyEventStream(request: Request): Promise<Response> {
   } catch (error) {
     clearTimeout(connectionTimer);
     request.signal.removeEventListener("abort", stop);
+    return proxyFailure(error);
+  }
+}
+
+export async function proxySystemMetrics(): Promise<Response> {
+  try {
+    return safeJson(parseSystemMetrics(await operatorJson("/api/system", { method: "GET" })), 200);
+  } catch (error) {
     return proxyFailure(error);
   }
 }

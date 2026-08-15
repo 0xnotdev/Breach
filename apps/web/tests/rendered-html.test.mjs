@@ -28,6 +28,15 @@ const liveFinding = {
   path: [{ file: "src/routes/render.ts", line: 42, role: "source", symbol: "req.body.filename", edge: "argument" }, { file: "src/routes/render.ts", line: 45, role: "sink", symbol: "child_process.exec", edge: "call" }],
   reviewState: "UNREVIEWED",
 };
+const liveSystemMetrics = [
+  { name: "discovery.repositories_hour", value: 12, unit: "count" },
+  { name: "scan.p95_latency_ms", value: 1250, unit: "milliseconds" },
+  { name: "reviews.total", value: 3, unit: "count" },
+  { name: "reviews.confirmed", value: 2, unit: "count" },
+  { name: "reviews.false_positive", value: 1, unit: "count" },
+  { name: "reviewed_precision", value: 2 / 3, unit: "ratio" },
+  { name: "safety.retention_violations", value: 0, unit: "count" },
+];
 
 before(async () => {
   upstream = createServer((request, response) => {
@@ -68,6 +77,10 @@ async function handleUpstream(request, response) {
   }
   if (request.method === "GET" && path === "/api/findings") {
     response.end(JSON.stringify({ findings: [upstreamFinding] }));
+    return;
+  }
+  if (request.method === "GET" && path === "/api/system") {
+    response.end(JSON.stringify({ metrics: liveSystemMetrics }));
     return;
   }
   if (request.method === "GET" && path === `/api/findings/${liveFinding.findingId}`) {
@@ -241,12 +254,20 @@ test("frontendNeverHardCodesStreamEvents", async () => {
   assert.doesNotMatch(source, /initialEvents|radial\/http-fixture|metadata accepted/u);
 });
 
-test("renders complete system validation and safety metrics", async () => {
+test("renders the live system dashboard boundary", async () => {
   const response = await render("/system");
   assert.equal(response.status, 200);
   const html = await response.text();
-  for (const metric of ["Throughput", "Selection funnel", "GitHub quota", "Request cost", "Scan latency", "Reviewed precision", "Partial / failed", "Canary retention"]) assert.match(html, new RegExp(metric));
-  assert.match(html, /DEGRADED/);
-  assert.match(html, /SAFE/);
-  assert.match(html, /0 retention violations/);
+  assert.match(html, /Loading live system metrics/);
+  assert.doesNotMatch(html, />(?:DEGRADED|SAFE)<|694 repos\/hr/i);
+  const metrics = await fetch(`${baseUrl}/api/system`);
+  assert.equal(metrics.status, 200);
+  assert.deepEqual(await metrics.json(), { metrics: liveSystemMetrics });
+  assert.equal(upstreamAuthorization, `Bearer ${operatorToken}`);
+});
+
+test("systemDashboardNeverHardCodesMetrics", async () => {
+  const pageSource = await readFile(new URL("app/system/page.tsx", templateRoot), "utf8");
+  assert.doesNotMatch(pageSource, /694 repos\/hr|6\.7%|71% remaining|4\.8 \/ scan|p95 48s|82%|0 retention violations/u);
+  assert.match(pageSource, /SystemDashboard/u);
 });

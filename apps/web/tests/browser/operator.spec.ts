@@ -13,6 +13,13 @@ const liveFinding = {
   path: [{ file: "src/routes/render.ts", line: 42, role: "source", symbol: "req.body.filename", edge: "argument" }, { file: "src/routes/render.ts", line: 45, role: "sink", symbol: "child_process.exec", edge: "call" }],
   reviewState: "UNREVIEWED",
 };
+const liveSystemMetrics = [
+  { name: "discovery.repositories_hour", value: 12, unit: "count" },
+  { name: "scan.p95_latency_ms", value: 1250, unit: "milliseconds" },
+  { name: "reviews.total", value: 3, unit: "count" },
+  { name: "reviewed_precision", value: 2 / 3, unit: "ratio" },
+  { name: "safety.retention_violations", value: 0, unit: "count" },
+];
 
 test("loads and filters sanitized findings through the same-origin boundary", async ({ page }) => {
   await page.route("**/api/findings?**", async (route) => route.fulfill({ json: { findings: [liveFinding] } }));
@@ -28,6 +35,7 @@ test("loads and filters sanitized findings through the same-origin boundary", as
 
 test("navigates the live stream and system safety view", async ({ page }) => {
   await page.route("**/api/stream*", async (route) => route.fulfill({ status: 200, contentType: "text/event-stream", body: 'id: 17\nevent: state\ndata: {"eventId":17,"repoId":1417,"fullName":"fixture/streamed","state":"SCANNED_FINDINGS","occurredAt":"2026-08-15T12:00:00.000Z","reasonCode":"scan_completed_findings"}\n\n' }));
+  await page.route("**/api/system", async (route) => route.fulfill({ json: { metrics: liveSystemMetrics } }));
   await page.goto("/");
   await page.getByRole("link", { name: /Stream/ }).click();
   await expect(page.getByRole("heading", { name: "Live state transitions" })).toBeVisible();
@@ -36,8 +44,11 @@ test("navigates the live stream and system safety view", async ({ page }) => {
   await expect(page.getByText("scan_completed_findings", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: /System/ }).click();
   await expect(page.getByRole("heading", { name: "System" })).toBeVisible();
-  await expect(page.locator(".health-summary").getByText("DEGRADED", { exact: true })).toBeVisible();
-  await expect(page.getByText("0 retention violations", { exact: true })).toBeVisible();
+  await expect(page.getByText("Repositories discovered / hour", { exact: true })).toBeVisible();
+  await expect(page.getByText("12", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("1.3s", { exact: true })).toBeVisible();
+  await expect(page.getByText("66.7%", { exact: true })).toBeVisible();
+  await expect(page.getByText("No data yet", { exact: true }).first()).toBeVisible();
 });
 
 test("reviewPersistsAcrossReload", async ({ page }) => {

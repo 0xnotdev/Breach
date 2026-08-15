@@ -4,12 +4,49 @@ import { createServer } from "node:http";
 import { createApiHandler, createDemoDataSource, readApiConfig, serveNodeRequest } from "./index.js";
 import type { SanitizedFinding } from "@breach/contracts";
 import type { OperatorDataSource, StreamEvent } from "@breach/operator";
+import type { Pool } from "pg";
+import { readPostgresSystemMetrics } from "./system-metrics.js";
 
 describe("operator API runtime", () => {
   it("apiBridgeNeverBuffersStreamingResponse", async () => {
     const source = await readFile(new URL("./index.ts", import.meta.url), "utf8");
     expect(source).not.toContain("result.arrayBuffer()");
     expect(source).toContain("result.body.getReader()");
+  });
+
+  it("systemMetricsComeFromPostgres", async () => {
+    const source = (await Promise.all([readFile(new URL("./index.ts", import.meta.url), "utf8"), readFile(new URL("./system-metrics.ts", import.meta.url), "utf8")])).join("\n");
+    expect(source).toContain("repository_candidates");
+    expect(source).toContain("finding_reviews");
+    expect(source).toContain("PERCENTILE_CONT");
+    expect(source).toContain("reviewed_precision");
+  });
+
+  it("derives rates and precision only from measured rows", async () => {
+    const pool = {
+      query: (sql: string) => {
+        if (sql.includes("system-discovery")) return Promise.resolve({ rows: [{ repositories_discovered_hour: "20", eligible_hour: "10", selected_hour: "5", waiting_for_commit: "3", commit_detected_hour: "8", failed_hour: "2", discovery_cursor: "9001", discovery_lag_seconds: "12" }] });
+        if (sql.includes("system-scans")) return Promise.resolve({ rows: [{ scans_started_hour: "9", scans_completed_hour: "8", partial_hour: "2", average_bytes: "2048", average_files: "12.5", p50_latency_ms: "500", p95_latency_ms: "1250" }] });
+        if (sql.includes("system-findings")) return Promise.resolve({ rows: [{ findings_hour: "4", critical_hour: "1", high_hour: "2", medium_hour: "1", exploitability_hour: "2", secrets_hour: "1", dependencies_hour: "1", config_hour: "0" }] });
+        if (sql.includes("system-reviews")) return Promise.resolve({ rows: [{ reviewed: "6", confirmed: "3", false_positive: "1", uncertain: "2", exploitability: "3", secrets: "1", dependencies: "1", config: "1" }] });
+        if (sql.includes("system-telemetry")) return Promise.resolve({ rows: [
+          { metric_name: "github.requests.total", hour_sum: "80", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
+          { metric_name: "github.requests_per_completed_scan", hour_sum: "40", hour_average: "5", latest_value: "4", latest_at: new Date("2026-08-15T12:00:00.000Z") },
+          { metric_name: "scan.failed", hour_sum: "2", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
+          { metric_name: "zero_retention.canary", hour_sum: "1", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
+        ] });
+        return Promise.reject(new Error("Unexpected metrics query"));
+      },
+    } as unknown as Pool;
+
+    const metrics = new Map((await readPostgresSystemMetrics(pool)).map((metric) => [metric.name, metric]));
+    expect(metrics.get("reviewed_precision")?.value).toBe(0.75);
+    expect(metrics.get("scan.partial_rate")?.value).toBe(0.25);
+    expect(metrics.get("scan.failure_rate")?.value).toBe(0.2);
+    expect(metrics.get("findings.per_1000_scans")?.value).toBe(500);
+    expect(metrics.get("github.requests_per_completed_scan")?.value).toBe(5);
+    expect(metrics.get("safety.canary.result")?.value).toBe(1);
+    expect(metrics.has("safety.retention_violations")).toBe(false);
   });
 
   it("streams an event written after Node response headers", async () => {
