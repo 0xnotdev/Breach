@@ -121,9 +121,9 @@ async function main() {
 
     const firstMigration = await runMigrations(pool);
     const secondMigration = await runMigrations(pool);
-    assert.deepEqual(firstMigration.applied, [1, 2, 3, 4]);
+    assert.deepEqual(firstMigration.applied, [1, 2, 3, 4, 5]);
     assert.deepEqual(secondMigration.applied, []);
-    assert.equal(secondMigration.currentVersion, 4);
+    assert.equal(secondMigration.currentVersion, 5);
 
     const config = readWorkerConfig({
       DATABASE_URL: integrationUrl.toString(),

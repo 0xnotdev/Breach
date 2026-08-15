@@ -871,3 +871,10 @@ This section is append-only. It records the red/green evidence for the productio
 - Added the checksummed `005_lifecycle_reasons.sql` migration. Discovery, admission, gate, rate-limit, scan, partial, and failure events retain only allowlisted reason codes. Partial results distinguish tree truncation, blob oversize, budget exhaustion, and analysis timeout; claimed failures distinguish tree/blob/parser failures without exception text.
 - `snapshotReleasedOnEveryFailurePath` proves transport chunks, the current partial blob, and all earlier assembled files are overwritten when a later blob stream fails. The orchestrator also releases acquired snapshots before atomically marking the claimed scan `FAILED`; no failure path leaves a scan ambiguously `SCANNING`.
 - Full local verification passed lint, strict typecheck, 15 files/134 tests, 98.25% statements/lines, 90.06% branches, 92.65% functions, all builds, 13 web checks, 5 Chromium journeys, zero high/critical production dependency vulnerabilities, and the 117-file tracked-secret audit.
+
+### 2026-08-15 19:21 IST — fix 34 GitHub RED / migration harness synchronization
+
+- GitHub Actions run `31888213660` completed with a controlled-full-stack failure after unit tests, coverage, builds, and idempotent migration execution had passed.
+- The integration harness correctly observed migration history `[1, 2, 3, 4, 5]`, but its explicit immutable-history assertion still expected the pre-lifecycle schema `[1, 2, 3, 4]` and current version `4`.
+- Updated the controlled full-stack contract to require all five immutable migrations and version `5`; the failing assertion remains a precise guard against missing, reordered, or unapplied production migrations.
+- Local GREEN: harness syntax validation and the complete `npm run verify` gate passed (134 tests, coverage thresholds, all builds, 13 rendered-web checks, 5 Chromium journeys, zero high/critical production dependency vulnerabilities, and 118 tracked files free of credential/canary leakage).
