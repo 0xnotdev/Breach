@@ -72,7 +72,7 @@ services:
           pids: 128
     init: true
     restart: unless-stopped
-    networks: [metadata]
+    networks: [metadata, operator]
 
   egress-proxy:
     build:
@@ -181,7 +181,7 @@ services:
           pids: 128
     init: true
     restart: unless-stopped
-    networks: [metadata]
+    networks: [operator]
 
   canary:
     profiles: ["tools"]
@@ -216,6 +216,7 @@ networks:
     internal: true
   proxy_control:
     internal: true
+  operator: {}
   egress: {}
 
 volumes:

@@ -71,8 +71,13 @@ describe("operational product contract", () => {
     expect(compose).toContain('127.0.0.1:${API_PORT:-8080}:8080');
     expect(compose).toContain('127.0.0.1:${WORKER_HEALTH_PORT:-8081}:8081');
     expect(compose).toContain('127.0.0.1:${WEB_PORT:-3000}:3000');
+    const api = compose.slice(compose.indexOf("\n  api:"), compose.indexOf("\n  egress-proxy:"));
     const worker = compose.slice(compose.indexOf("\n  worker:"), compose.indexOf("\n  web:"));
+    const web = compose.slice(compose.indexOf("\n  web:"), compose.indexOf("\n  canary:"));
+    expect(api).toMatch(/networks:\s*\[metadata, operator\]/u);
     expect(worker).toMatch(/127\.0\.0\.1:8081\/readyz/u);
+    expect(web).toMatch(/networks:\s*\[operator\]/u);
+    expect(compose).toMatch(/\n {2}operator:\s*\{\}/u);
     expect(workflow).toMatch(/docker compose down --volumes --remove-orphans/u);
     expect(workflow).toMatch(/docker compose up --detach --wait postgres api egress-proxy web/u);
     expect(workflow).toMatch(/docker compose run --rm --build canary/u);
