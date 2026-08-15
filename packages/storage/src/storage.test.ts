@@ -139,6 +139,29 @@ describe("metadata persistence seam", () => {
     );
   });
 
+  it("rateLimitedCandidateRecoversAfterDeadline", async () => {
+    const retryAt = new Date("2026-08-15T10:05:00.000Z");
+    await store.recordDiscoveryPage("public-repositories", 211, [{ repoId: 211, fullName: "fixture/rate-limited", htmlUrl: "https://github.com/fixture/rate-limited", discoveredAt: new Date("2026-08-15T10:00:00.000Z"), priorityScore: 90, candidateState: "WAITING_FOR_COMMIT", selectionReason: "selected" }]);
+
+    await store.rateLimitCandidate(211, retryAt, 2);
+    await expect(store.getCandidate(211)).resolves.toMatchObject({ candidateState: "RATE_LIMITED", nextCommitCheckAt: retryAt, commitCheckAttempts: 2 });
+    await expect(store.releaseDueRateLimits(new Date("2026-08-15T10:04:59.999Z"))).resolves.toBe(0);
+    await expect(store.getCandidate(211)).resolves.toMatchObject({ candidateState: "RATE_LIMITED" });
+    await expect(store.releaseDueRateLimits(retryAt)).resolves.toBe(1);
+    await expect(store.getCandidate(211)).resolves.toMatchObject({ candidateState: "WAITING_FOR_COMMIT", nextCommitCheckAt: null });
+  });
+
+  it("initialDiscoveryWritesLifecycleEvents", async () => {
+    await store.recordDiscoveryPage("public-repositories", 221, [{ repoId: 221, fullName: "fixture/events", htmlUrl: "https://github.com/fixture/events", discoveredAt: new Date("2026-08-15T10:00:00.000Z"), priorityScore: 90, candidateState: "WAITING_FOR_COMMIT", selectionReason: "selected" }]);
+
+    await expect(store.getStateEvents(221)).resolves.toMatchObject([
+      { fromState: null, toState: "DISCOVERED" },
+      { fromState: "DISCOVERED", toState: "WAITING_FOR_COMMIT" },
+    ]);
+    await store.recordDiscoveryPage("public-repositories", 221, [{ repoId: 221, fullName: "fixture/events", htmlUrl: "https://github.com/fixture/events", discoveredAt: new Date("2026-08-15T10:00:00.000Z"), priorityScore: 90, candidateState: "WAITING_FOR_COMMIT", selectionReason: "selected" }]);
+    await expect(store.getStateEvents(221)).resolves.toHaveLength(2);
+  });
+
   it("round-trips sanitized findings and rejects forbidden raw fields", async () => {
     const safeFinding = {
       findingId: randomUUID(),

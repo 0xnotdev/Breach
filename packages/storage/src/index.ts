@@ -95,6 +95,16 @@ export interface DiscoveredCandidate {
 
 export interface StoredCandidate extends Omit<DiscoveredCandidate, "candidateState"> {
   candidateState: CandidateState;
+  commitCheckAttempts: number;
+  nextCommitCheckAt: Date | null;
+}
+
+export interface StoredStateEvent {
+  eventId: number;
+  repoId: number;
+  fromState: CandidateState | null;
+  toState: CandidateState;
+  occurredAt: Date;
 }
 
 export interface ReviewedFinding extends SanitizedFinding {
@@ -115,6 +125,9 @@ export interface MetadataStore {
   getDiscoveryCursor(streamName: string): Promise<number | null>;
   getCandidate(repoId: number): Promise<StoredCandidate | null>;
   transitionCandidate(repoId: number, nextState: CandidateState): Promise<StoredCandidate>;
+  rateLimitCandidate(repoId: number, retryAt: Date, attempt: number): Promise<void>;
+  releaseDueRateLimits(now: Date): Promise<number>;
+  getStateEvents(repoId: number): Promise<StoredStateEvent[]>;
   saveFinding(finding: SanitizedFinding): Promise<void>;
   getFinding(findingId: string): Promise<SanitizedFinding | null>;
   reviewFinding(
@@ -282,6 +295,21 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
               candidate.selectionReason,
             ],
           );
+          await client.query(
+            "SELECT repo_id FROM repository_candidates WHERE repo_id = $1 FOR UPDATE",
+            [candidate.repoId],
+          );
+          const initialEvent = await client.query(
+            "SELECT event_id FROM state_events WHERE repo_id = $1 LIMIT 1",
+            [candidate.repoId],
+          );
+          if (initialEvent.rows.length === 0) {
+            await client.query(
+              `INSERT INTO state_events (repo_id, from_state, to_state, occurred_at)
+               VALUES ($1, NULL, 'DISCOVERED', $2), ($1, 'DISCOVERED', $3, $2)`,
+              [candidate.repoId, candidate.discoveredAt, candidate.candidateState],
+            );
+          }
         }
 
         await client.query(
@@ -336,6 +364,8 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         priority_score: number;
         candidate_state: string;
         selection_reason: string;
+        commit_check_attempts: number;
+        next_commit_check_at: Date | null;
       }>("SELECT * FROM repository_candidates WHERE repo_id = $1", [repoId]);
       const row = result.rows[0];
       if (row === undefined) return null;
@@ -347,6 +377,8 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
         priorityScore: row.priority_score,
         candidateState: candidateStateSchema.parse(row.candidate_state),
         selectionReason: candidateSelectionReasonSchema.parse(row.selection_reason),
+        commitCheckAttempts: row.commit_check_attempts,
+        nextCommitCheckAt: row.next_commit_check_at === null ? null : new Date(row.next_commit_check_at),
       };
     },
 
@@ -371,6 +403,82 @@ export async function createMetadataStore(pool: Pool): Promise<MetadataStore> {
       const updated = await store.getCandidate(repoId);
       if (updated === null) throw new Error(`Candidate ${String(repoId)} disappeared`);
       return updated;
+    },
+
+    async rateLimitCandidate(repoId, retryAt, attempt) {
+      if (!Number.isFinite(retryAt.getTime()) || !Number.isSafeInteger(attempt) || attempt < 0) {
+        throw new Error("Invalid rate-limit schedule");
+      }
+      await inTransaction(pool, async (client) => {
+        const current = await client.query<{ candidate_state: string }>(
+          "SELECT candidate_state FROM repository_candidates WHERE repo_id = $1 FOR UPDATE",
+          [repoId],
+        );
+        const row = current.rows[0];
+        if (row === undefined) throw new Error(`Candidate ${String(repoId)} does not exist`);
+        const currentState = candidateStateSchema.parse(row.candidate_state);
+        if (!allowedTransitions[currentState].includes("RATE_LIMITED")) {
+          throw new Error(`Illegal candidate transition: ${currentState} -> RATE_LIMITED`);
+        }
+        await client.query(
+          `UPDATE repository_candidates SET candidate_state = 'RATE_LIMITED',
+             next_commit_check_at = $1, commit_check_attempts = $2
+           WHERE repo_id = $3`,
+          [retryAt, attempt, repoId],
+        );
+        await client.query(
+          "INSERT INTO state_events (repo_id, from_state, to_state) VALUES ($1, $2, 'RATE_LIMITED')",
+          [repoId, currentState],
+        );
+      });
+    },
+
+    async releaseDueRateLimits(now) {
+      if (!Number.isFinite(now.getTime())) throw new Error("Invalid rate-limit recovery time");
+      return inTransaction(pool, async (client) => {
+        const due = await client.query<{ repo_id: string }>(
+          `SELECT repo_id FROM repository_candidates
+           WHERE candidate_state = 'RATE_LIMITED'
+             AND next_commit_check_at IS NOT NULL
+             AND next_commit_check_at <= $1
+           ORDER BY repo_id FOR UPDATE`,
+          [now],
+        );
+        for (const row of due.rows) {
+          await client.query(
+            `UPDATE repository_candidates
+             SET candidate_state = 'WAITING_FOR_COMMIT', next_commit_check_at = NULL
+             WHERE repo_id = $1`,
+            [row.repo_id],
+          );
+          await client.query(
+            "INSERT INTO state_events (repo_id, from_state, to_state, occurred_at) VALUES ($1, 'RATE_LIMITED', 'WAITING_FOR_COMMIT', $2)",
+            [row.repo_id, now],
+          );
+        }
+        return due.rows.length;
+      });
+    },
+
+    async getStateEvents(repoId) {
+      const result = await pool.query<{
+        event_id: string;
+        repo_id: string;
+        from_state: string | null;
+        to_state: string;
+        occurred_at: Date;
+      }>(
+        `SELECT event_id, repo_id, from_state, to_state, occurred_at FROM state_events
+         WHERE repo_id = $1 ORDER BY event_id`,
+        [repoId],
+      );
+      return result.rows.map((row) => ({
+        eventId: Number(row.event_id),
+        repoId: Number(row.repo_id),
+        fromState: row.from_state === null ? null : candidateStateSchema.parse(row.from_state),
+        toState: candidateStateSchema.parse(row.to_state),
+        occurredAt: new Date(row.occurred_at),
+      }));
     },
 
     async saveFinding(finding) {

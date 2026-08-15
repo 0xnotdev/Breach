@@ -37,6 +37,7 @@ export interface DataflowAccess {
 export interface LifecycleStore {
   transition(repoId: number, state: CandidateState): Promise<void>;
   scheduleCommitCheck(repoId: number, nextCheckAt: Date, attempt: number): Promise<void>;
+  rateLimitCandidate(repoId: number, retryAt: Date, attempt: number): Promise<void>;
   claimScan(repoId: number, headSha: string, startedAt: Date): Promise<boolean>;
   saveFindings(findings: readonly SanitizedFinding[]): Promise<void>;
   completeScan(
@@ -240,7 +241,7 @@ export class ScanOrchestrator {
       return { kind: "waiting", nextCheckAt: gate.nextCheckAt };
     }
     if (gate.kind === "rate_limited") {
-      await this.#store.transition(candidate.repoId, "RATE_LIMITED");
+      await this.#store.rateLimitCandidate(candidate.repoId, gate.retryAt, candidate.attempts);
       await this.#store.recordMetric("github.rate_limited", 1, { outcome: "rate_limited" });
       return { kind: "rate_limited", retryAt: gate.retryAt };
     }

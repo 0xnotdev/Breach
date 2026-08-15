@@ -32,6 +32,7 @@ class MemoryLifecycleStore implements LifecycleStore {
   readonly findings: SanitizedFinding[] = [];
   readonly metrics: Array<{ name: string; value: number; labels: Readonly<Record<string, string>> }> = [];
   readonly schedules: Array<{ nextCheckAt: Date; attempt: number }> = [];
+  readonly rateLimits: Array<{ retryAt: Date; attempt: number }> = [];
   claimResult = true;
   completion: { state: CandidateState; coverage: Coverage } | null = null;
 
@@ -42,6 +43,12 @@ class MemoryLifecycleStore implements LifecycleStore {
 
   scheduleCommitCheck(_repoId: number, nextCheckAt: Date, attempt: number): Promise<void> {
     this.schedules.push({ nextCheckAt, attempt });
+    return Promise.resolve();
+  }
+
+  rateLimitCandidate(_repoId: number, retryAt: Date, attempt: number): Promise<void> {
+    this.transitions.push("RATE_LIMITED");
+    this.rateLimits.push({ retryAt, attempt });
     return Promise.resolve();
   }
 
@@ -123,6 +130,9 @@ describe("scan orchestration lifecycle", () => {
       expect(result.kind).toBe(outcome.kind === "failed" ? "failed" : outcome.kind);
       expect(reads).toBe(0);
       expect(store.transitions).toContain(outcome.kind === "rate_limited" ? "RATE_LIMITED" : "FAILED");
+      if (outcome.kind === "rate_limited") {
+        expect(store.rateLimits).toEqual([{ retryAt: outcome.retryAt, attempt: 0 }]);
+      }
     }
   });
 

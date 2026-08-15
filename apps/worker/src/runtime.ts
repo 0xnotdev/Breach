@@ -181,6 +181,10 @@ export async function createWorkerRuntime(config: WorkerConfig, pool: Pool): Pro
           ? await discovery.bootstrap()
           : await discovery.catchUp(config.discoveryStartCursor ?? 0, discoveryLimits)
         : await discovery.catchUp(cursor, discoveryLimits);
+      const recovered = await store.releaseDueRateLimits(new Date());
+      if (recovered > 0) {
+        await store.recordMetric("github.rate_limit.recovered_candidates", recovered, {});
+      }
       const due = await pool.query<{ repo_id: string; full_name: string; commit_check_attempts: number }>(
         `SELECT repo_id, full_name, commit_check_attempts FROM repository_candidates
          WHERE candidate_state = 'WAITING_FOR_COMMIT'
@@ -228,7 +232,7 @@ export async function runControlledDemo(raw: string) {
   const states: CandidateState[] = ["DISCOVERED", "WAITING_FOR_COMMIT"];
   const findings: SanitizedFinding[] = []; const metrics: Array<{ name: string; value: number }> = [];
   const store: LifecycleStore = {
-    transition: (_id, state) => { states.push(state); return Promise.resolve(); }, scheduleCommitCheck: () => Promise.resolve(), claimScan: () => Promise.resolve(true),
+    transition: (_id, state) => { states.push(state); return Promise.resolve(); }, scheduleCommitCheck: () => Promise.resolve(), rateLimitCandidate: () => { states.push("RATE_LIMITED"); return Promise.resolve(); }, claimScan: () => Promise.resolve(true),
     saveFindings: (items) => { findings.push(...items); return Promise.resolve(); }, completeScan: () => Promise.resolve(),
     recordMetric: (name, value) => { metrics.push({ name, value }); return Promise.resolve(); },
   };
