@@ -236,3 +236,88 @@ export async function proxyFindingReview(request: Request, id: string): Promise<
     return proxyFailure(error);
   }
 }
+
+export async function proxyEventStream(request: Request): Promise<Response> {
+  const abort = new AbortController();
+  const stop = () => { abort.abort(); };
+  request.signal.addEventListener("abort", stop, { once: true });
+  const connectionTimer = setTimeout(stop, 10_000);
+  try {
+    const incoming = new URL(request.url);
+    if ([...incoming.searchParams.keys()].some((name) => name !== "after") || incoming.searchParams.getAll("after").length > 1) {
+      clearTimeout(connectionTimer);
+      request.signal.removeEventListener("abort", stop);
+      return safeJson({ error: "invalid_request" }, 400);
+    }
+    const after = incoming.searchParams.get("after");
+    const lastEventId = request.headers.get("last-event-id");
+    for (const cursor of [after, lastEventId]) {
+      if (cursor !== null && (!/^\d+$/u.test(cursor) || !Number.isSafeInteger(Number(cursor)))) {
+        clearTimeout(connectionTimer);
+        request.signal.removeEventListener("abort", stop);
+        return safeJson({ error: "invalid_request" }, 400);
+      }
+    }
+    const { baseUrl, token } = operatorConfig();
+    const target = new URL("/api/stream", baseUrl);
+    if (after !== null) target.searchParams.set("after", after);
+    const upstream = await fetch(target, {
+      headers: {
+        accept: "text/event-stream",
+        authorization: `Bearer ${token}`,
+        ...(lastEventId === null ? {} : { "last-event-id": lastEventId }),
+      },
+      cache: "no-store",
+      redirect: "error",
+      signal: abort.signal,
+    });
+    clearTimeout(connectionTimer);
+    if (!upstream.ok || upstream.body === null) {
+      await upstream.body?.cancel();
+      if (upstream.status === 400) {
+        request.signal.removeEventListener("abort", stop);
+        return safeJson({ error: "invalid_request" }, 400);
+      }
+      throw new OperatorProxyError(502, "operator_api_unavailable");
+    }
+    if (upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLocaleLowerCase("en-US") !== "text/event-stream") {
+      await upstream.body.cancel();
+      throw new OperatorProxyError(502, "invalid_upstream_response");
+    }
+    const reader = upstream.body.getReader();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            request.signal.removeEventListener("abort", stop);
+            controller.close();
+          } else {
+            controller.enqueue(chunk.value);
+          }
+        } catch (error) {
+          request.signal.removeEventListener("abort", stop);
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        stop();
+        request.signal.removeEventListener("abort", stop);
+        await reader.cancel(reason);
+      },
+    });
+    return new Response(body, {
+      headers: {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-store, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+        "x-content-type-options": "nosniff",
+      },
+    });
+  } catch (error) {
+    clearTimeout(connectionTimer);
+    request.signal.removeEventListener("abort", stop);
+    return proxyFailure(error);
+  }
+}

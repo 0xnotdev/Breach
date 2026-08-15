@@ -89,6 +89,10 @@ class MemoryOperatorData implements OperatorDataSource {
     return Promise.resolve(this.events);
   }
 
+  latestEventId(): Promise<number> {
+    return Promise.resolve(this.events.reduce((latest, event) => Math.max(latest, event.eventId), 0));
+  }
+
   getSystemMetrics(): Promise<readonly SystemMetric[]> {
     return Promise.resolve(this.metrics);
   }
@@ -118,6 +122,7 @@ const request = (path: string, init: RequestInit = {}) =>
 describe("sanitized operator HTTP/SSE interface", () => {
   it("rejects invalid construction, filters, routes, stream cursors, and review bodies", async () => {
     expect(() => new OperatorRouter(new MemoryOperatorData([]), "short")).toThrow();
+    expect(() => new OperatorRouter(new MemoryOperatorData([]), "operator-test-token", { streamPollIntervalMs: 0 })).toThrow("stream configuration");
     const item = finding({ category: "configuration", severity: "medium", detectedAt: "2026-08-12T12:00:00.000Z" });
     const data = new MemoryOperatorData([item]);
     const router = new OperatorRouter(data, "operator-test-token");
@@ -126,6 +131,8 @@ describe("sanitized operator HTTP/SSE interface", () => {
       await expect(response.json()).resolves.toEqual({ findings: [] });
     }
     expect((await router.handle(request("/api/stream?after=-1"))).status).toBe(400);
+    expect((await router.handle(request("/api/stream?after=1&after=2"))).status).toBe(400);
+    expect((await router.handle(request("/api/stream", { headers: { "last-event-id": "invalid" } }))).status).toBe(400);
     expect((await router.handle(request(`/api/findings/${randomUUID()}`))).status).toBe(404);
     expect((await router.handle(request("/api/unknown"))).status).toBe(404);
     for (const body of ["null", "[]", '{"state":"UNREVIEWED"}', '{"state":"CONFIRMED","note":1}', "not-json"]) {
@@ -143,7 +150,10 @@ describe("sanitized operator HTTP/SSE interface", () => {
     const event = data.events[0];
     if (event === undefined) throw new Error("Fixture event is missing");
     data.events[0] = { ...event, fullName: "invalid" };
-    expect((await router.handle(request("/api/stream"))).status).toBe(400);
+    const invalidStream = await router.handle(request("/api/stream"));
+    const invalidReader = invalidStream.body?.getReader();
+    if (invalidReader === undefined) throw new Error("Stream body is missing");
+    await expect(invalidReader.read()).rejects.toThrow("Invalid event metadata");
     data.events[0] = { eventId: 1, repoId: 1401, fullName: "fixture/operator", state: "SCANNED_FINDINGS", occurredAt: "2026-08-12T12:00:00.000Z" };
     data.metrics[0] = { name: "INVALID", value: Number.NaN, unit: "bad unit" };
     expect((await router.handle(request("/api/system"))).status).toBe(400);
@@ -235,19 +245,74 @@ describe("sanitized operator HTTP/SSE interface", () => {
 
   it("exposes sanitized state events and system metrics", async () => {
     const router = new OperatorRouter(new MemoryOperatorData([]), "operator-test-token");
-    const stream = await router.handle(request("/api/stream"));
+    const controller = new AbortController();
+    const stream = await router.handle(request("/api/stream", { signal: controller.signal }));
     const system = await router.handle(request("/api/system"));
 
     expect(stream.headers.get("content-type")).toContain("text/event-stream");
-    const streamText = await stream.text();
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Stream body is missing");
+    const chunk = await reader.read();
+    const streamText = new TextDecoder().decode(chunk.value);
     expect(streamText).toContain("SCANNED_FINDINGS");
     expect(streamText).not.toContain("source");
+    controller.abort();
+    await reader.cancel();
     await expect(system.json()).resolves.toEqual({
       metrics: [
         { name: "repositories.scanned_hour", value: 694, unit: "count" },
         { name: "zero_retention.canary", value: 1, unit: "healthy" },
       ],
     });
+  });
+
+  it("streamConnectionReceivesLaterEvent", async () => {
+    const data = new MemoryOperatorData([]);
+    data.events.splice(0);
+    const router = new OperatorRouter(data, "operator-test-token", { streamPollIntervalMs: 10, streamHeartbeatIntervalMs: 50 });
+    const controller = new AbortController();
+    const response = await router.handle(request("/api/stream", { signal: controller.signal }));
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error("Stream body is missing");
+
+    data.events.push({ eventId: 2, repoId: 1402, fullName: "fixture/later", state: "READY", occurredAt: "2026-08-15T12:00:00.000Z" });
+    const chunk = await reader.read();
+    expect(chunk.done).toBe(false);
+    const text = new TextDecoder().decode(chunk.value);
+    expect(text).toContain("id: 2");
+    expect(text).toContain('"fullName":"fixture/later"');
+    expect(text).toContain('"reasonCode":"commit_observed"');
+
+    controller.abort();
+    await reader.cancel();
+  });
+
+  it("bounds reconnect backlog and emits heartbeat comments", async () => {
+    const data = new MemoryOperatorData([]);
+    data.events.splice(0);
+    for (let eventId = 1; eventId <= 4; eventId += 1) data.events.push({ eventId, repoId: 1400 + eventId, fullName: `fixture/event-${String(eventId)}`, state: "DISCOVERED", occurredAt: "2026-08-15T12:00:00.000Z" });
+    const controller = new AbortController();
+    const router = new OperatorRouter(data, "operator-test-token", { streamPollIntervalMs: 5, streamHeartbeatIntervalMs: 20, streamBacklogLimit: 2 });
+    const response = await router.handle(request("/api/stream", { signal: controller.signal, headers: { "last-event-id": "1" } }));
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error("Stream body is missing");
+    const first = new TextDecoder().decode((await reader.read()).value);
+    const second = new TextDecoder().decode((await reader.read()).value);
+    expect(first).toContain("id: 3");
+    expect(second).toContain("id: 4");
+    expect(first + second).not.toContain("id: 2");
+    controller.abort();
+    await reader.cancel();
+
+    const empty = new MemoryOperatorData([]);
+    empty.events.splice(0);
+    const heartbeatController = new AbortController();
+    const heartbeat = await new OperatorRouter(empty, "operator-test-token", { streamPollIntervalMs: 5, streamHeartbeatIntervalMs: 10 }).handle(request("/api/stream", { signal: heartbeatController.signal }));
+    const heartbeatReader = heartbeat.body?.getReader();
+    if (heartbeatReader === undefined) throw new Error("Stream body is missing");
+    expect(new TextDecoder().decode((await heartbeatReader.read()).value)).toBe(": heartbeat\n\n");
+    heartbeatController.abort();
+    await heartbeatReader.cancel();
   });
 
   it("rejects sensitive review notes and never echoes request content in errors", async () => {

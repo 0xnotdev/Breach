@@ -27,10 +27,13 @@ test("loads and filters sanitized findings through the same-origin boundary", as
 });
 
 test("navigates the live stream and system safety view", async ({ page }) => {
+  await page.route("**/api/stream*", async (route) => route.fulfill({ status: 200, contentType: "text/event-stream", body: 'id: 17\nevent: state\ndata: {"eventId":17,"repoId":1417,"fullName":"fixture/streamed","state":"SCANNED_FINDINGS","occurredAt":"2026-08-15T12:00:00.000Z","reasonCode":"scan_completed_findings"}\n\n' }));
   await page.goto("/");
   await page.getByRole("link", { name: /Stream/ }).click();
   await expect(page.getByRole("heading", { name: "Live state transitions" })).toBeVisible();
-  await expect(page.getByText("WAITING_FOR_COMMIT", { exact: true })).toBeVisible();
+  await expect(page.getByText("SCANNED_FINDINGS", { exact: true })).toBeVisible();
+  await expect(page.getByText("fixture/streamed", { exact: true })).toBeVisible();
+  await expect(page.getByText("scan_completed_findings", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: /System/ }).click();
   await expect(page.getByRole("heading", { name: "System" })).toBeVisible();
   await expect(page.locator(".health-summary").getByText("DEGRADED", { exact: true })).toBeVisible();

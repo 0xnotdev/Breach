@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import {
+  candidateStateSchema,
   reviewStateSchema,
   sanitizedFindingSchema,
   type CandidateState,
@@ -29,8 +30,21 @@ export interface OperatorDataSource {
     state: Exclude<ReviewState, "UNREVIEWED">,
     note?: string,
   ): Promise<SanitizedFinding>;
-  listEvents(afterEventId?: number): Promise<readonly StreamEvent[]>;
+  listEvents(afterEventId?: number, throughEventId?: number): Promise<readonly StreamEvent[]>;
+  latestEventId(): Promise<number>;
   getSystemMetrics(): Promise<readonly SystemMetric[]>;
+}
+
+export interface OperatorRouterOptions {
+  readonly streamPollIntervalMs?: number;
+  readonly streamHeartbeatIntervalMs?: number;
+  readonly streamBacklogLimit?: number;
+}
+
+interface StreamOptions {
+  readonly pollIntervalMs: number;
+  readonly heartbeatIntervalMs: number;
+  readonly backlogLimit: number;
 }
 
 const severityRank: Readonly<Record<SanitizedFinding["severity"], number>> = {
@@ -130,22 +144,125 @@ function safeGitHubLink(finding: SanitizedFinding): string {
   return `${finding.repository.url}/blob/${finding.revision.sha}/${encodedPath}#L${String(node.line)}`;
 }
 
-function sanitizeEvent(value: StreamEvent): StreamEvent {
+const eventReasonCodes: Readonly<Record<CandidateState, string>> = {
+  DISCOVERED: "repository_discovered",
+  SKIPPED: "candidate_not_admitted",
+  WAITING_FOR_COMMIT: "commit_gate_pending",
+  READY: "commit_observed",
+  SCANNING: "scan_started",
+  SCANNED_NO_FINDINGS: "scan_completed_no_findings",
+  SCANNED_FINDINGS: "scan_completed_findings",
+  PARTIAL: "scan_partial",
+  FAILED: "scan_failed",
+  RATE_LIMITED: "github_rate_limited",
+};
+
+function sanitizeEvent(value: StreamEvent): StreamEvent & { readonly reasonCode: string } {
   if (
-    !Number.isSafeInteger(value.eventId) ||
-    !Number.isSafeInteger(value.repoId) ||
+    !Number.isSafeInteger(value.eventId) || value.eventId < 1 ||
+    !Number.isSafeInteger(value.repoId) || value.repoId < 1 ||
     !/^[^/\s]+\/[^/\s]+$/u.test(value.fullName) ||
     !Number.isFinite(Date.parse(value.occurredAt))
   ) {
     throw new Error("Invalid event metadata");
   }
+  const state = candidateStateSchema.safeParse(value.state);
+  if (!state.success) throw new Error("Invalid event metadata");
   return {
     eventId: value.eventId,
     repoId: value.repoId,
     fullName: value.fullName,
-    state: value.state,
+    state: state.data,
     occurredAt: value.occurredAt,
+    reasonCode: eventReasonCodes[state.data],
   };
+}
+
+function parseStreamOptions(options: OperatorRouterOptions): StreamOptions {
+  const pollIntervalMs = options.streamPollIntervalMs ?? 1_000;
+  const heartbeatIntervalMs = options.streamHeartbeatIntervalMs ?? 15_000;
+  const backlogLimit = options.streamBacklogLimit ?? 500;
+  if (
+    !Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1 || pollIntervalMs > 60_000 ||
+    !Number.isSafeInteger(heartbeatIntervalMs) || heartbeatIntervalMs < 1 || heartbeatIntervalMs > 120_000 ||
+    !Number.isSafeInteger(backlogLimit) || backlogLimit < 1 || backlogLimit > 500
+  ) {
+    throw new Error("Invalid operator stream configuration");
+  }
+  return { pollIntervalMs, heartbeatIntervalMs, backlogLimit };
+}
+
+function eventStream(data: OperatorDataSource, request: Request, cursorAtConnect: number, options: StreamOptions): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  let wake: (() => void) | undefined;
+  let closeForAbort: (() => void) | undefined;
+  const stop = () => { cancelled = true; wake?.(); };
+  const abortStream = () => { if (!cancelled) { stop(); closeForAbort?.(); } };
+  request.signal.addEventListener("abort", abortStream, { once: true });
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      let controllerOpen = true;
+      closeForAbort = () => { if (controllerOpen) { controllerOpen = false; controller.close(); } };
+      if (request.signal.aborted) abortStream();
+      const enqueue = (text: string) => {
+        if (!cancelled && controllerOpen) controller.enqueue(encoder.encode(text));
+      };
+      const wait = async () => {
+        if (cancelled) return;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => { wake = undefined; resolve(); }, options.pollIntervalMs);
+          wake = () => { clearTimeout(timer); wake = undefined; resolve(); };
+        });
+      };
+      const run = async () => {
+        let cursor = cursorAtConnect;
+        let lastWriteAt = Date.now();
+        try {
+          const highWater = await data.latestEventId();
+          if (!Number.isSafeInteger(highWater) || highWater < 0) throw new Error("Invalid event cursor");
+          const backlogAfter = Math.max(cursor, highWater - options.backlogLimit);
+          const backlog = (await data.listEvents(backlogAfter, highWater))
+            .map(sanitizeEvent)
+            .filter((event) => event.eventId > cursor && event.eventId <= highWater)
+            .sort((left, right) => left.eventId - right.eventId)
+            .slice(-options.backlogLimit);
+          for (const event of backlog) enqueue(`id: ${String(event.eventId)}\nevent: state\ndata: ${JSON.stringify(event)}\n\n`);
+          if (backlog.length > 0) lastWriteAt = Date.now();
+          cursor = Math.max(cursor, highWater);
+
+          while (!cancelled) {
+            const events = (await data.listEvents(cursor))
+              .map(sanitizeEvent)
+              .filter((event) => event.eventId > cursor)
+              .sort((left, right) => left.eventId - right.eventId)
+              .slice(0, options.backlogLimit);
+            for (const event of events) {
+              enqueue(`id: ${String(event.eventId)}\nevent: state\ndata: ${JSON.stringify(event)}\n\n`);
+              cursor = event.eventId;
+              lastWriteAt = Date.now();
+            }
+            if (events.length === 0 && Date.now() - lastWriteAt >= options.heartbeatIntervalMs) {
+              enqueue(": heartbeat\n\n");
+              lastWriteAt = Date.now();
+            }
+            await wait();
+          }
+        } catch (error) {
+          if (!cancelled) {
+            cancelled = true;
+            controllerOpen = false;
+            controller.error(error instanceof Error ? error : new Error("Event stream failed"));
+          }
+        } finally {
+          request.signal.removeEventListener("abort", abortStream);
+        }
+      };
+      void run();
+    },
+    cancel() { stop(); },
+  });
 }
 
 function sanitizeMetric(value: SystemMetric): SystemMetric {
@@ -162,13 +279,15 @@ function sanitizeMetric(value: SystemMetric): SystemMetric {
 export class OperatorRouter {
   readonly #data: OperatorDataSource;
   readonly #token: string;
+  readonly #streamOptions: StreamOptions;
 
-  constructor(data: OperatorDataSource, token: string) {
+  constructor(data: OperatorDataSource, token: string, options: OperatorRouterOptions = {}) {
     if (new TextEncoder().encode(token).byteLength < 16) {
       throw new Error("Operator token must be at least 16 bytes");
     }
     this.#data = data;
     this.#token = token;
+    this.#streamOptions = parseStreamOptions(options);
   }
 
   async handle(request: Request): Promise<Response> {
@@ -194,15 +313,11 @@ export class OperatorRouter {
       }
 
       if (request.method === "GET" && url.pathname === "/api/stream") {
-        const afterText = url.searchParams.get("after");
+        if (url.searchParams.getAll("after").length > 1) return invalidRequest();
+        const afterText = url.searchParams.get("after") ?? request.headers.get("last-event-id");
         const after = afterText === null ? undefined : Number(afterText);
         if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) return invalidRequest();
-        const events = await this.#data.listEvents(after);
-        const body = events
-          .map(sanitizeEvent)
-          .map((event) => `id: ${String(event.eventId)}\nevent: state\ndata: ${JSON.stringify(event)}\n\n`)
-          .join("");
-        return new Response(body, {
+        return new Response(eventStream(this.#data, request, after ?? 0, this.#streamOptions), {
           headers: {
             "content-type": "text/event-stream; charset=utf-8",
             "cache-control": "no-store",

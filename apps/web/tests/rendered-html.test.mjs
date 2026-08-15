@@ -12,6 +12,8 @@ let server;
 let upstream;
 let upstreamAuthorization = "";
 let upstreamFinding;
+let upstreamLastEventId = "";
+let upstreamStreamQuery = "";
 const operatorToken = "operator-runtime-secret-987654321";
 const liveFinding = {
   findingId: "76a23814-bfc1-4c15-9444-f7019803e6dd",
@@ -53,6 +55,17 @@ async function handleUpstream(request, response) {
   upstreamFinding ??= liveFinding;
   const path = new URL(request.url ?? "/", "http://operator.local").pathname;
   response.setHeader("content-type", "application/json");
+  if (request.method === "GET" && path === "/api/stream") {
+    upstreamLastEventId = request.headers["last-event-id"] ?? "";
+    upstreamStreamQuery = new URL(request.url ?? "/", "http://operator.local").search;
+    response.setHeader("content-type", "text/event-stream; charset=utf-8");
+    response.setHeader("cache-control", "no-store");
+    response.flushHeaders();
+    response.write(": heartbeat\n\n");
+    const timer = setTimeout(() => response.write('id: 7\nevent: state\ndata: {"eventId":7,"repoId":1402,"fullName":"fixture/later","state":"READY","occurredAt":"2026-08-15T12:00:00.000Z","reasonCode":"commit_observed"}\n\n'), 20);
+    request.once("close", () => clearTimeout(timer));
+    return;
+  }
   if (request.method === "GET" && path === "/api/findings") {
     response.end(JSON.stringify({ findings: [upstreamFinding] }));
     return;
@@ -166,6 +179,24 @@ test("same-origin detail and review routes persist without echoing notes", async
   upstreamFinding = liveFinding;
 });
 
+test("same-origin stream route remains open for later events", async () => {
+  const response = await fetch(`${baseUrl}/api/stream?after=5`, { headers: { "last-event-id": "6" } });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream\b/u);
+  const reader = response.body?.getReader();
+  assert.ok(reader);
+  const first = await reader.read();
+  assert.equal(first.done, false);
+  assert.match(new TextDecoder().decode(first.value), /: heartbeat/u);
+  const later = await reader.read();
+  assert.equal(later.done, false);
+  assert.match(new TextDecoder().decode(later.value), /event: state.*fixture\/later/su);
+  assert.equal(upstreamAuthorization, `Bearer ${operatorToken}`);
+  assert.equal(upstreamLastEventId, "6");
+  assert.equal(upstreamStreamQuery, "?after=5");
+  await reader.cancel();
+});
+
 async function expectBody(response, expected) {
   assert.deepEqual(await response.json(), expected);
 }
@@ -196,14 +227,18 @@ test("renders secret details without retaining the raw value", async () => {
   assert.doesNotMatch(source, /AKIA[0-9A-Z]{16}/);
 });
 
-test("renders every sanitized public scan state in the live stream", async () => {
+test("frontendNeverHardCodesStreamEvents", async () => {
   const response = await render("/stream");
   assert.equal(response.status, 200);
   const html = await response.text();
-  for (const state of ["DISCOVERED", "SKIPPED", "WAITING_FOR_COMMIT", "READY", "SCANNING", "SCANNED_NO_FINDINGS", "SCANNED_FINDINGS", "PARTIAL", "FAILED", "RATE_LIMITED"]) assert.match(html, new RegExp(state));
   assert.match(html, /Live state transitions/);
   assert.match(html, /Metadata only/i);
+  assert.match(html, /RECONNECTING/);
   assert.doesNotMatch(html, /raw_(?:body|content|secret)|source_code/i);
+  const source = await readFile(new URL("app/ui/LiveStream.tsx", templateRoot), "utf8");
+  assert.match(source, /new EventSource\("\/api\/stream"\)/u);
+  assert.match(source, /reasonCode/u);
+  assert.doesNotMatch(source, /initialEvents|radial\/http-fixture|metadata accepted/u);
 });
 
 test("renders complete system validation and safety metrics", async () => {
