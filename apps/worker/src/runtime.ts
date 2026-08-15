@@ -2,7 +2,18 @@ import { Pool } from "pg";
 import { SecretScanner, type OsvBatchRequest, type OsvBatchResponse, type OsvTransport } from "@breach/analyzers";
 import type { CandidateState, Coverage, ReviewState, SanitizedFinding } from "@breach/contracts";
 import { PassiveExploitabilityAnalyzer } from "@breach/dataflow";
-import { AsyncSerialDispatcher, CandidatePolicy, CommitGate, DiscoveryCollector, type GitHubResponse, type GitHubTransport } from "@breach/github";
+import {
+  AsyncSerialDispatcher,
+  CandidatePolicy,
+  CommitGate,
+  DiscoveryCollector,
+  GitHubQuotaTracker,
+  createGitHubRequestEvent,
+  type GitHubRequestEvent,
+  type GitHubRequestObserver,
+  type GitHubResponse,
+  type GitHubTransport,
+} from "@breach/github";
 import { ScanOrchestrator, type LifecycleStore } from "@breach/orchestrator";
 import { EgressPolicy } from "@breach/security";
 import { SnapshotReader, type BlobStreamTransport } from "@breach/snapshot";
@@ -18,6 +29,12 @@ export interface WorkerConfig {
   discoveryStartCursor: number | null;
   candidateMinimumScore: number;
   targetSelectionRatio: number;
+  maxDiscoveryPages: number;
+  maxDiscoveryRequests: number;
+  maxDiscoveryElapsedMs: number;
+  maxCommitChecksPerCycle: number;
+  maxScansPerCycle: number;
+  githubQuotaReserve: number;
 }
 
 export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>): WorkerConfig {
@@ -30,6 +47,12 @@ export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string
     : Number(discoveryStartCursorText);
   const candidateMinimumScore = Number(env.CANDIDATE_MINIMUM_SCORE ?? "60");
   const targetSelectionRatio = Number(env.TARGET_SELECTION_RATIO ?? "0.07");
+  const maxDiscoveryPages = Number(env.MAX_DISCOVERY_PAGES_PER_CYCLE ?? "2");
+  const maxDiscoveryRequests = Number(env.MAX_DISCOVERY_REQUESTS_PER_CYCLE ?? "2");
+  const maxDiscoveryElapsedMs = Number(env.MAX_DISCOVERY_ELAPSED_MS ?? "10000");
+  const maxCommitChecksPerCycle = Number(env.MAX_COMMIT_CHECKS_PER_CYCLE ?? "25");
+  const maxScansPerCycle = Number(env.MAX_SCANS_PER_CYCLE ?? "5");
+  const githubQuotaReserve = Number(env.GITHUB_QUOTA_RESERVE ?? "200");
   let database: URL; try { database = new URL(databaseUrl); } catch { throw new Error("DATABASE_URL must be PostgreSQL"); }
   if (!['postgres:', 'postgresql:'].includes(database.protocol)) throw new Error("DATABASE_URL must be PostgreSQL");
   if (githubToken.length < 8) throw new Error("GITHUB_TOKEN is required");
@@ -41,7 +64,17 @@ export function readWorkerConfig(env: NodeJS.ProcessEnv | Readonly<Record<string
   if (discoveryMode === "live" && discoveryStartCursor !== null) throw new Error("DISCOVERY_START_CURSOR requires historical discovery mode");
   if (!Number.isInteger(candidateMinimumScore) || candidateMinimumScore < 0 || candidateMinimumScore > 100) throw new Error("CANDIDATE_MINIMUM_SCORE must be between 0 and 100");
   if (!Number.isFinite(targetSelectionRatio) || targetSelectionRatio <= 0 || targetSelectionRatio > 1) throw new Error("TARGET_SELECTION_RATIO must be greater than 0 and at most 1");
-  return { databaseUrl, githubToken, fingerprintKey, pollIntervalMs, healthPort, discoveryMode, discoveryStartCursor, candidateMinimumScore, targetSelectionRatio };
+  for (const [name, value, maximum] of [
+    ["MAX_DISCOVERY_PAGES_PER_CYCLE", maxDiscoveryPages, 100],
+    ["MAX_DISCOVERY_REQUESTS_PER_CYCLE", maxDiscoveryRequests, 100],
+    ["MAX_DISCOVERY_ELAPSED_MS", maxDiscoveryElapsedMs, 60_000],
+    ["MAX_COMMIT_CHECKS_PER_CYCLE", maxCommitChecksPerCycle, 1_000],
+    ["MAX_SCANS_PER_CYCLE", maxScansPerCycle, 100],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) throw new Error(`${name} is invalid`);
+  }
+  if (!Number.isSafeInteger(githubQuotaReserve) || githubQuotaReserve < 0 || githubQuotaReserve > 100_000) throw new Error("GITHUB_QUOTA_RESERVE is invalid");
+  return { databaseUrl, githubToken, fingerprintKey, pollIntervalMs, healthPort, discoveryMode, discoveryStartCursor, candidateMinimumScore, targetSelectionRatio, maxDiscoveryPages, maxDiscoveryRequests, maxDiscoveryElapsedMs, maxCommitChecksPerCycle, maxScansPerCycle, githubQuotaReserve };
 }
 
 export class FetchGitHubTransport implements GitHubTransport {
@@ -56,10 +89,20 @@ export class FetchGitHubTransport implements GitHubTransport {
 
 export class FetchBlobTransport implements BlobStreamTransport {
   readonly #policy = new EgressPolicy();
-  constructor(readonly token: string) {}
+  readonly #observer: GitHubRequestObserver;
+  constructor(readonly token: string, observer: GitHubRequestObserver = () => undefined) {
+    this.#observer = observer;
+  }
   async *stream(target: string, headers: Readonly<Record<string, string>>): AsyncIterable<Uint8Array> {
     const url = this.#policy.assertAllowed(target);
-    const response = await fetch(url, { headers: { ...headers, authorization: `Bearer ${this.token}` }, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+    let response: Response;
+    try {
+      response = await fetch(url, { headers: { ...headers, authorization: `Bearer ${this.token}` }, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+    } catch (error) {
+      await this.#observer({ family: "blob", status: 0 });
+      throw error;
+    }
+    await this.#observer(createGitHubRequestEvent("blob", response.status, Object.fromEntries(response.headers)));
     if (!response.ok || response.body === null) throw new Error(`Blob request failed with status ${String(response.status)}`);
     const reader = response.body.getReader();
     try { for (;;) { const result = await reader.read(); if (result.done) break; yield result.value; } } finally { reader.releaseLock(); }
@@ -82,20 +125,102 @@ async function boundedJson(response: Response, maxBytes: number): Promise<unknow
   return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 }
 
-export async function runWorkerCycle(config: WorkerConfig, pool = new Pool({ connectionString: config.databaseUrl, max: 4 })) {
-  const store = await createMetadataStore(pool); const dispatcher = new AsyncSerialDispatcher(new FetchGitHubTransport(), config.githubToken);
+function requestStatusClass(status: number): "network_error" | "2xx" | "3xx" | "4xx" | "5xx" | "other" {
+  if (status === 0) return "network_error";
+  if (status >= 200 && status < 300) return "2xx";
+  if (status >= 300 && status < 400) return "3xx";
+  if (status >= 400 && status < 500) return "4xx";
+  if (status >= 500 && status < 600) return "5xx";
+  return "other";
+}
+
+export interface WorkerCycleResult {
+  nextCursor: number | null;
+  processed: number;
+  scansStarted: number;
+  quotaPaused: boolean;
+}
+
+export interface WorkerRuntime {
+  runCycle(): Promise<WorkerCycleResult>;
+  quotaStatus(): ReturnType<GitHubQuotaTracker["snapshot"]>;
+}
+
+export async function createWorkerRuntime(config: WorkerConfig, pool: Pool): Promise<WorkerRuntime> {
+  const store = await createMetadataStore(pool);
+  const quota = new GitHubQuotaTracker();
+  const requestCounter = { total: 0 };
+  const observeRequest = async (event: GitHubRequestEvent) => {
+    requestCounter.total += 1;
+    quota.observe(event);
+    const labels = { family: event.family, status_class: requestStatusClass(event.status) };
+    await store.recordMetric("github.requests.total", 1, labels);
+    await store.recordMetric(`github.requests.${event.family}`, 1, { status_class: labels.status_class });
+    if (event.remaining !== undefined) await store.recordMetric("github.rate_limit.remaining", event.remaining, {});
+    if (event.limit !== undefined) await store.recordMetric("github.rate_limit.limit", event.limit, {});
+    if (event.resetAt !== undefined) await store.recordMetric("github.rate_limit.reset_at", event.resetAt.getTime(), {});
+    const quotaState = quota.snapshot();
+    await store.recordMetric("github.rate_limit.paused", quotaState.paused ? 1 : 0, {});
+    await store.recordMetric("github.rate_limit.secondary_limited", quotaState.secondaryLimited ? 1 : 0, {});
+  };
+  const dispatcher = new AsyncSerialDispatcher(new FetchGitHubTransport(), config.githubToken, observeRequest);
   const discovery = new DiscoveryCollector({ dispatcher, policy: new CandidatePolicy({ minimumScore: config.candidateMinimumScore, targetSelectionRatio: config.targetSelectionRatio }), sink: store });
-  const cursor = await store.getDiscoveryCursor("public-repositories");
-  const nextCursor = cursor === null
-    ? config.discoveryMode === "live"
-      ? await discovery.bootstrap()
-      : await discovery.catchUp(config.discoveryStartCursor ?? 0)
-    : await discovery.catchUp(cursor);
-  const snapshots = new SnapshotReader(dispatcher, new FetchBlobTransport(config.githubToken));
+  const snapshots = new SnapshotReader(dispatcher, new FetchBlobTransport(config.githubToken, observeRequest));
   const orchestrator = new ScanOrchestrator({ gate: new CommitGate(dispatcher), snapshots, store, secretScanner: new SecretScanner(config.fingerprintKey), osv: new FetchOsvTransport(), dataflow: new PassiveExploitabilityAnalyzer() });
-  const due = await pool.query<{ repo_id: string; full_name: string; commit_check_attempts: number }>("SELECT repo_id, full_name, commit_check_attempts FROM repository_candidates WHERE candidate_state = 'WAITING_FOR_COMMIT' AND (next_commit_check_at IS NULL OR next_commit_check_at <= CURRENT_TIMESTAMP) ORDER BY priority_score DESC, repo_id LIMIT 25");
-  let processed = 0; for (const row of due.rows) { await orchestrator.process({ repoId: Number(row.repo_id), fullName: row.full_name, attempts: row.commit_check_attempts }); processed += 1; }
-  return { nextCursor, processed };
+  const discoveryLimits = { maxPages: config.maxDiscoveryPages, maxRequests: config.maxDiscoveryRequests, maxElapsedMs: config.maxDiscoveryElapsedMs };
+
+  return {
+    async runCycle() {
+      const cursor = await store.getDiscoveryCursor("public-repositories");
+      if (!quota.canAdmit(config.githubQuotaReserve)) {
+        await store.recordMetric("github.rate_limit.paused", 1, { stage: "cycle_admission" });
+        return { nextCursor: cursor, processed: 0, scansStarted: 0, quotaPaused: true };
+      }
+      const nextCursor = cursor === null
+        ? config.discoveryMode === "live"
+          ? await discovery.bootstrap()
+          : await discovery.catchUp(config.discoveryStartCursor ?? 0, discoveryLimits)
+        : await discovery.catchUp(cursor, discoveryLimits);
+      const due = await pool.query<{ repo_id: string; full_name: string; commit_check_attempts: number }>(
+        `SELECT repo_id, full_name, commit_check_attempts FROM repository_candidates
+         WHERE candidate_state = 'WAITING_FOR_COMMIT'
+           AND (next_commit_check_at IS NULL OR next_commit_check_at <= CURRENT_TIMESTAMP)
+         ORDER BY priority_score DESC, repo_id DESC LIMIT $1`,
+        [config.maxCommitChecksPerCycle],
+      );
+      let processed = 0;
+      let scansStarted = 0;
+      for (const row of due.rows) {
+        if (!quota.canAdmit(config.githubQuotaReserve)) {
+          await store.recordMetric("github.rate_limit.paused", 1, { stage: "candidate_admission" });
+          break;
+        }
+        const requestsBefore = requestCounter.total;
+        const result = await orchestrator.process({ repoId: Number(row.repo_id), fullName: row.full_name, attempts: row.commit_check_attempts });
+        processed += 1;
+        if (result.kind === "scanned" || (result.kind === "failed" && result.reason === "analysis_failed")) {
+          scansStarted += 1;
+          await store.recordMetric("github.requests_per_completed_scan", requestCounter.total - requestsBefore, { outcome: result.kind });
+          if (scansStarted >= config.maxScansPerCycle) break;
+        }
+      }
+      return { nextCursor, processed, scansStarted, quotaPaused: false };
+    },
+    quotaStatus: () => quota.snapshot(),
+  };
+}
+
+export async function runWorkerCycle(
+  config: WorkerConfig,
+  pool?: Pool,
+): Promise<WorkerCycleResult> {
+  const ownedPool = pool ?? new Pool({ connectionString: config.databaseUrl, max: 4 });
+  try {
+    const runtime = await createWorkerRuntime(config, ownedPool);
+    return await runtime.runCycle();
+  } finally {
+    if (pool === undefined) await ownedPool.end();
+  }
 }
 
 export async function runControlledDemo(raw: string) {

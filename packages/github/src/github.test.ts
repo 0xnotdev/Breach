@@ -4,6 +4,7 @@ import {
   CandidatePolicy,
   CommitGate,
   DiscoveryCollector,
+  GitHubQuotaTracker,
   applyPushEvent,
   type GitHubResponse,
   type GitHubTransport,
@@ -249,6 +250,95 @@ describe("GitHub metadata intake and commit authorization", () => {
 
     await Promise.all([dispatcher.get("/one"), dispatcher.get("/two"), dispatcher.get("/three")]);
     expect(maximum).toBe(1);
+  });
+
+  it("accounts for every serialized request with bounded endpoint families", async () => {
+    const events: Array<{ family: string; status: number; remaining?: number; limit?: number }> = [];
+    const transport = new ScriptedTransport([
+      response(200, [], { "x-ratelimit-remaining": "4999", "x-ratelimit-limit": "5000" }),
+      response(404, {}, {}),
+      response(200, { tree: [], truncated: false }, {}),
+      response(200, { tree: [], truncated: false }, {}),
+      response(200, {}, {}),
+      response(200, {}, {}),
+    ]);
+    const dispatcher = new AsyncSerialDispatcher(transport, undefined, (event) => {
+      events.push(event);
+    });
+
+    await dispatcher.get("/repositories?since=1");
+    await dispatcher.get("/repos/fixture/repo/commits?per_page=1");
+    await dispatcher.get(`/repos/fixture/repo/git/trees/${"a".repeat(40)}?recursive=1`, "subtree");
+    await dispatcher.get(`/repos/fixture/repo/git/trees/${"b".repeat(40)}?recursive=1`);
+    await dispatcher.get(`/repos/fixture/repo/git/blobs/${"c".repeat(40)}`);
+    await dispatcher.get("/rate_limit");
+
+    expect(events).toEqual([
+      { family: "discovery", status: 200, remaining: 4999, limit: 5000 },
+      { family: "commit_gate", status: 404 },
+      { family: "subtree", status: 200 },
+      { family: "tree", status: 200 },
+      { family: "blob", status: 200 },
+      { family: "other", status: 200 },
+    ]);
+  });
+
+  it("quotaReserveStopsNewScanAdmission", () => {
+    let now = new Date("2026-08-15T10:00:00.000Z");
+    const quota = new GitHubQuotaTracker(() => now);
+
+    quota.observe({ family: "commit_gate", status: 200, remaining: 201, limit: 5_000 });
+    expect(quota.canAdmit(200)).toBe(true);
+    quota.observe({ family: "commit_gate", status: 200, remaining: 200, limit: 5_000 });
+    expect(quota.canAdmit(200)).toBe(false);
+    expect(quota.snapshot()).toMatchObject({ remaining: 200, limit: 5_000, paused: false });
+    expect(() => quota.canAdmit(-1)).toThrow("non-negative integer");
+
+    const resetAt = new Date("2026-08-15T10:01:00.000Z");
+    quota.observe({ family: "discovery", status: 429, remaining: 199, resetAt, secondaryLimited: true });
+    expect(quota.snapshot()).toMatchObject({ paused: true, secondaryLimited: true });
+    now = new Date("2026-08-15T10:01:01.000Z");
+    expect(quota.canAdmit(200)).toBe(true);
+    expect(quota.snapshot()).toMatchObject({ remaining: null, resetAt: null, paused: false, secondaryLimited: false });
+
+    quota.observe({ family: "commit_gate", status: 403 });
+    expect(quota.snapshot().paused).toBe(true);
+    quota.observe({ family: "commit_gate", status: 200, remaining: 4_999 });
+    expect(quota.snapshot()).toMatchObject({ paused: false, secondaryLimited: false });
+  });
+
+  it("bounds discovery work so catch-up continues in a later cycle", async () => {
+    const transport = new ScriptedTransport([
+      response(200, [{ id: 901, name: "api", full_name: "fixture/api", html_url: "https://github.com/fixture/api", description: "backend api", fork: false }], { link: '<https://api.github.com/repositories?since=901>; rel="next"' }),
+      response(200, [{ id: 902, name: "server", full_name: "fixture/server", html_url: "https://github.com/fixture/server", description: "server", fork: false }]),
+    ]);
+    const collector = new DiscoveryCollector({
+      dispatcher: new AsyncSerialDispatcher(transport),
+      policy: new CandidatePolicy({ minimumScore: 0, targetSelectionRatio: 1 }),
+      sink: { bootstrapDiscovery: () => Promise.resolve(), recordDiscoveryPage: () => Promise.resolve() },
+      now: () => new Date("2026-08-15T10:00:00.000Z"),
+    });
+
+    await expect(collector.catchUp(900, { maxPages: 1, maxRequests: 1, maxElapsedMs: 1_000 })).resolves.toBe(901);
+    expect(transport.requests).toHaveLength(1);
+    for (const invalid of [
+      { maxPages: 0, maxRequests: 1, maxElapsedMs: 1_000 },
+      { maxPages: 1, maxRequests: 0, maxElapsedMs: 1_000 },
+      { maxPages: 1, maxRequests: 1, maxElapsedMs: 0 },
+    ]) {
+      await expect(collector.catchUp(901, invalid)).rejects.toThrow("positive");
+    }
+  });
+
+  it("accounts for a failed transport request without response content", async () => {
+    const events: Array<{ family: string; status: number }> = [];
+    const dispatcher = new AsyncSerialDispatcher(
+      { get: () => Promise.reject(new Error("network unavailable")) },
+      undefined,
+      (event) => { events.push(event); },
+    );
+    await expect(dispatcher.get("/repositories?since=1")).rejects.toThrow("network unavailable");
+    expect(events).toEqual([{ family: "discovery", status: 0 }]);
   });
 
   it("turns only a successful commit check into a content scan permit", async () => {

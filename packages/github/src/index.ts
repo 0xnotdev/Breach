@@ -13,23 +13,148 @@ export interface GitHubTransport {
   get(url: string, headers: Readonly<Record<string, string>>): Promise<GitHubResponse>;
 }
 
+export type GitHubEndpointFamily = "discovery" | "commit_gate" | "tree" | "subtree" | "blob" | "other";
+
+export interface GitHubRequestEvent {
+  family: GitHubEndpointFamily;
+  status: number;
+  remaining?: number;
+  limit?: number;
+  resetAt?: Date;
+  secondaryLimited?: boolean;
+}
+
+export type GitHubRequestObserver = (event: GitHubRequestEvent) => void | Promise<void>;
+
+function requestFamily(target: string): GitHubEndpointFamily {
+  const url = new URL(target);
+  if (url.pathname === "/repositories" || url.pathname === "/search/repositories") return "discovery";
+  if (/^\/repos\/[^/]+\/[^/]+\/commits$/u.test(url.pathname)) return "commit_gate";
+  if (/^\/repos\/[^/]+\/[^/]+\/git\/trees\//u.test(url.pathname)) return "tree";
+  if (/^\/repos\/[^/]+\/[^/]+\/git\/blobs\//u.test(url.pathname)) return "blob";
+  return "other";
+}
+
+function boundedHeaderNumber(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+export function createGitHubRequestEvent(
+  family: GitHubEndpointFamily,
+  status: number,
+  headers: Readonly<Record<string, string>>,
+): GitHubRequestEvent {
+  const remaining = boundedHeaderNumber(headers["x-ratelimit-remaining"]);
+  const limit = boundedHeaderNumber(headers["x-ratelimit-limit"]);
+  const resetSeconds = boundedHeaderNumber(headers["x-ratelimit-reset"]);
+  const secondaryLimited =
+    (status === 403 || status === 429) &&
+    headers["retry-after"] !== undefined &&
+    remaining !== 0;
+  return {
+    family,
+    status,
+    ...(remaining === undefined ? {} : { remaining }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(resetSeconds === undefined ? {} : { resetAt: new Date(resetSeconds * 1_000) }),
+    ...(secondaryLimited ? { secondaryLimited: true } : {}),
+  };
+}
+
+export class GitHubQuotaTracker {
+  readonly #now: () => Date;
+  #remaining: number | null = null;
+  #limit: number | null = null;
+  #resetAt: Date | null = null;
+  #pausedUntil: Date | null = null;
+  #secondaryLimited = false;
+
+  constructor(now: () => Date = () => new Date()) {
+    this.#now = now;
+  }
+
+  observe(event: GitHubRequestEvent): void {
+    if (event.remaining !== undefined) this.#remaining = event.remaining;
+    if (event.limit !== undefined) this.#limit = event.limit;
+    if (event.resetAt !== undefined) this.#resetAt = event.resetAt;
+    if (event.status === 403 || event.status === 429) {
+      this.#pausedUntil = event.resetAt ?? new Date(this.#now().getTime() + 60_000);
+      this.#secondaryLimited = event.secondaryLimited ?? false;
+    } else if (event.status >= 200 && event.status < 400) {
+      this.#pausedUntil = null;
+      this.#secondaryLimited = false;
+    }
+  }
+
+  canAdmit(reserve: number): boolean {
+    if (!Number.isSafeInteger(reserve) || reserve < 0) throw new RangeError("GitHub quota reserve must be a non-negative integer");
+    this.#refreshAfterReset();
+    const paused = this.#pausedUntil !== null && this.#pausedUntil.getTime() > this.#now().getTime();
+    return !paused && (this.#remaining === null || this.#remaining > reserve);
+  }
+
+  snapshot(): {
+    remaining: number | null;
+    limit: number | null;
+    resetAt: Date | null;
+    paused: boolean;
+    secondaryLimited: boolean;
+  } {
+    this.#refreshAfterReset();
+    return {
+      remaining: this.#remaining,
+      limit: this.#limit,
+      resetAt: this.#resetAt,
+      paused: this.#pausedUntil !== null && this.#pausedUntil.getTime() > this.#now().getTime(),
+      secondaryLimited: this.#secondaryLimited,
+    };
+  }
+
+  #refreshAfterReset(): void {
+    const now = this.#now().getTime();
+    const resetElapsed = this.#resetAt !== null && this.#resetAt.getTime() <= now;
+    const pauseElapsed = this.#pausedUntil !== null && this.#pausedUntil.getTime() <= now;
+    if (resetElapsed || pauseElapsed) {
+      this.#remaining = null;
+      this.#pausedUntil = null;
+      this.#secondaryLimited = false;
+      if (resetElapsed) this.#resetAt = null;
+    }
+  }
+}
+
 export class AsyncSerialDispatcher {
   readonly #transport: GitHubTransport;
   readonly #headers: Readonly<Record<string, string>>;
+  readonly #observer: GitHubRequestObserver;
   #tail: Promise<void> = Promise.resolve();
 
-  constructor(transport: GitHubTransport, token?: string) {
+  constructor(transport: GitHubTransport, token?: string, observer: GitHubRequestObserver = () => undefined) {
     this.#transport = transport;
     this.#headers = Object.freeze({
       accept: "application/vnd.github+json",
       "x-github-api-version": apiVersion,
       ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
     });
+    this.#observer = observer;
   }
 
-  async get(url: string): Promise<GitHubResponse> {
+  async get(url: string, familyOverride?: GitHubEndpointFamily): Promise<GitHubResponse> {
     const absoluteUrl = url.startsWith("https://") ? url : `${apiRoot}${url.startsWith("/") ? "" : "/"}${url}`;
-    const pending = this.#tail.then(async () => this.#transport.get(absoluteUrl, this.#headers));
+    const family = familyOverride ?? requestFamily(absoluteUrl);
+    const pending = this.#tail.then(async () => {
+      let response: GitHubResponse;
+      try {
+        response = await this.#transport.get(absoluteUrl, this.#headers);
+      } catch (error) {
+        await this.#observer({ family, status: 0 });
+        throw error;
+      }
+      await this.#observer(createGitHubRequestEvent(family, response.status, response.headers));
+      return response;
+    });
     this.#tail = pending.then(
       () => undefined,
       () => undefined,
@@ -158,6 +283,18 @@ export interface DiscoverySink {
   ): Promise<void>;
 }
 
+export interface DiscoveryCycleLimits {
+  maxPages: number;
+  maxRequests: number;
+  maxElapsedMs: number;
+}
+
+const defaultDiscoveryCycleLimits: DiscoveryCycleLimits = {
+  maxPages: 2,
+  maxRequests: 2,
+  maxElapsedMs: 10_000,
+};
+
 function parseRepository(value: unknown): RepositoryMetadata {
   if (typeof value !== "object" || value === null) throw new Error("Invalid repository metadata");
   const row = value as Record<string, unknown>;
@@ -246,12 +383,31 @@ export class DiscoveryCollector {
     return frontier;
   }
 
-  async catchUp(initialCursor: number): Promise<number> {
+  async catchUp(
+    initialCursor: number,
+    limits: DiscoveryCycleLimits = defaultDiscoveryCycleLimits,
+  ): Promise<number> {
+    if (
+      !Number.isSafeInteger(limits.maxPages) || limits.maxPages <= 0 ||
+      !Number.isSafeInteger(limits.maxRequests) || limits.maxRequests <= 0 ||
+      !Number.isFinite(limits.maxElapsedMs) || limits.maxElapsedMs <= 0
+    ) {
+      throw new RangeError("Discovery cycle limits must be positive");
+    }
     let cursor = initialCursor;
     let url: string | null = `${apiRoot}/repositories?since=${String(cursor)}`;
+    let pages = 0;
+    let requests = 0;
+    const startedAt = this.#now().getTime();
 
-    while (url !== null) {
+    while (
+      url !== null &&
+      pages < limits.maxPages &&
+      requests < limits.maxRequests &&
+      this.#now().getTime() - startedAt < limits.maxElapsedMs
+    ) {
       const result = await this.#dispatcher.get(url);
+      requests += 1;
       if (result.status === 403 || result.status === 429) {
         throw new GitHubRateLimitError(result.status, retryAtFromHeaders(result.headers, this.#now()));
       }
@@ -260,6 +416,7 @@ export class DiscoveryCollector {
       }
 
       const repositories = result.body.map(parseRepository);
+      pages += 1;
       if (repositories.length > 0) {
         const nextCursor = Math.max(cursor, ...repositories.map((repository) => repository.id));
         const discoveredAt = this.#now();

@@ -246,6 +246,7 @@ export class SnapshotReader {
     const startedAt = this.#nowMs();
     const treeResult = await this.#treeDispatcher.get(
       `/repos/${permit.fullName}/git/trees/${permit.headSha}?recursive=1`,
+      "tree",
     );
     if (treeResult.status !== 200) {
       throw new Error(`Git tree request failed with status ${String(treeResult.status)}`);
@@ -264,6 +265,7 @@ export class SnapshotReader {
         if (this.#nowMs() - startedAt >= this.#budgets.wallClockMs) break;
         const subtreeResult = await this.#treeDispatcher.get(
           `/repos/${permit.fullName}/git/trees/${directory.sha}?recursive=1`,
+          "subtree",
         );
         if (subtreeResult.status !== 200) continue;
         const subtree = parseTree(subtreeResult.body);

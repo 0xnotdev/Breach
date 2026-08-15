@@ -1,15 +1,117 @@
 import { createServer } from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { readWorkerConfig, runWorkerCycle } from "./runtime.js";
+import { createWorkerRuntime, readWorkerConfig } from "./runtime.js";
+
+export interface WorkerSchedulerStatus {
+  phase: "idle" | "running" | "waiting" | "stopping" | "stopped";
+  cyclesCompleted: number;
+  lastCycleSucceeded: boolean | null;
+  lastStartedAt: Date | null;
+  lastCompletedAt: Date | null;
+}
+
+export class WorkerScheduler {
+  readonly #cycle: () => Promise<unknown>;
+  readonly #pollIntervalMs: number;
+  readonly #now: () => Date;
+  readonly #onError: (error: unknown) => void;
+  #phase: WorkerSchedulerStatus["phase"] = "idle";
+  #cyclesCompleted = 0;
+  #lastCycleSucceeded: boolean | null = null;
+  #lastStartedAt: Date | null = null;
+  #lastCompletedAt: Date | null = null;
+  #stopping = false;
+  #loop: Promise<void> | null = null;
+  #delayController: AbortController | null = null;
+
+  constructor(options: {
+    cycle: () => Promise<unknown>;
+    pollIntervalMs: number;
+    now?: () => Date;
+    onError?: (error: unknown) => void;
+  }) {
+    if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs < 0) {
+      throw new RangeError("Worker poll interval must be non-negative");
+    }
+    this.#cycle = options.cycle;
+    this.#pollIntervalMs = options.pollIntervalMs;
+    this.#now = options.now ?? (() => new Date());
+    this.#onError = options.onError ?? (() => undefined);
+  }
+
+  start(): void {
+    if (this.#loop !== null) return;
+    this.#loop = this.#run();
+  }
+
+  async stop(): Promise<void> {
+    this.#stopping = true;
+    if (this.#phase !== "stopped") this.#phase = "stopping";
+    this.#delayController?.abort();
+    if (this.#loop !== null) await this.#loop;
+    else this.#phase = "stopped";
+  }
+
+  status(): WorkerSchedulerStatus {
+    return {
+      phase: this.#phase,
+      cyclesCompleted: this.#cyclesCompleted,
+      lastCycleSucceeded: this.#lastCycleSucceeded,
+      lastStartedAt: this.#lastStartedAt,
+      lastCompletedAt: this.#lastCompletedAt,
+    };
+  }
+
+  #shouldStop(): boolean {
+    return this.#stopping;
+  }
+
+  async #run(): Promise<void> {
+    while (!this.#shouldStop()) {
+      this.#phase = "running";
+      this.#lastStartedAt = this.#now();
+      try {
+        await this.#cycle();
+        this.#lastCycleSucceeded = true;
+      } catch (error) {
+        this.#lastCycleSucceeded = false;
+        this.#onError(error);
+      } finally {
+        this.#cyclesCompleted += 1;
+        this.#lastCompletedAt = this.#now();
+      }
+      if (this.#shouldStop()) break;
+      const elapsed = this.#lastCompletedAt.getTime() - this.#lastStartedAt.getTime();
+      const delayMs = Math.max(0, this.#pollIntervalMs - elapsed);
+      this.#phase = "waiting";
+      this.#delayController = new AbortController();
+      try {
+        await sleep(delayMs, undefined, { signal: this.#delayController.signal });
+      } catch (error) {
+        if (!(error instanceof Error) || error.name !== "AbortError") throw error;
+      } finally {
+        this.#delayController = null;
+      }
+    }
+    this.#phase = "stopped";
+  }
+}
 
 export async function startWorker() {
-  const config = readWorkerConfig(process.env); const pool = new Pool({ connectionString: config.databaseUrl, max: 4 }); let ready = false; let stopping = false;
-  const health = createServer((request, response) => { const status = request.url === "/healthz" ? 200 : request.url === "/readyz" && ready ? 200 : 503; response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify({ status: status === 200 ? "ok" : "not_ready" })); });
+  const config = readWorkerConfig(process.env); const pool = new Pool({ connectionString: config.databaseUrl, max: 4 });
+  const runtime = await createWorkerRuntime(config, pool);
+  const scheduler = new WorkerScheduler({ cycle: () => runtime.runCycle(), pollIntervalMs: config.pollIntervalMs, onError: () => { process.stderr.write("Breach worker cycle failed\n"); } });
+  const health = createServer((request, response) => { const worker = scheduler.status(); const ready = worker.lastCycleSucceeded === true && worker.phase !== "stopping" && worker.phase !== "stopped"; const status = request.url === "/healthz" ? 200 : request.url === "/readyz" && ready ? 200 : 503; response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify({ status: status === 200 ? "ok" : "not_ready", worker, quota: runtime.quotaStatus() })); });
   await new Promise<void>((resolve) => health.listen(config.healthPort, "0.0.0.0", resolve));
-  const cycle = async () => { try { await runWorkerCycle(config, pool); ready = true; } catch { ready = false; process.stderr.write("Breach worker cycle failed\n"); } };
-  await cycle(); const timer = setInterval(() => { if (!stopping) void cycle(); }, config.pollIntervalMs);
-  const stop = async () => { stopping = true; clearInterval(timer); await new Promise<void>((resolve) => health.close(() => { resolve(); })); await pool.end(); };
+  scheduler.start();
+  let stopPromise: Promise<void> | null = null;
+  const stop = async () => {
+    if (stopPromise !== null) return stopPromise;
+    stopPromise = (async () => { await scheduler.stop(); await new Promise<void>((resolve) => health.close(() => { resolve(); })); await pool.end(); })();
+    return stopPromise;
+  };
   process.once("SIGTERM", () => { void stop(); }); process.once("SIGINT", () => { void stop(); }); return { health, stop };
 }
 
