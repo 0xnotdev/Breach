@@ -74,10 +74,12 @@ export function createDemoDataSource(): OperatorDataSource {
   };
 }
 
-export interface ApiRuntimeDependencies { readonly pool?: Pool }
+export interface ApiRuntimeDependencies { readonly pool?: Pool; readonly shutdownGraceMs?: number }
 
 export async function startApi(config = readApiConfig(process.env), dependencies: ApiRuntimeDependencies = {}) {
   const ownsPool = dependencies.pool === undefined;
+  const shutdownGraceMs = dependencies.shutdownGraceMs ?? 1_000;
+  if (!Number.isSafeInteger(shutdownGraceMs) || shutdownGraceMs < 0 || shutdownGraceMs > 30_000) throw new Error("API shutdown grace period is invalid");
   const pool = dependencies.pool ?? new Pool({ connectionString: config.databaseUrl, max: 5 });
   const store = await createMetadataStore(pool);
   const handler = createApiHandler(new PostgresOperatorDataSource(pool, store), config.operatorToken, async () => { await pool.query("SELECT 1"); return true; });
@@ -90,7 +92,14 @@ export async function startApi(config = readApiConfig(process.env), dependencies
     process.off("SIGTERM", onSignal);
     process.off("SIGINT", onSignal);
     closePromise = (async () => {
-      if (server.listening) await new Promise<void>((resolve, reject) => server.close((error) => { if (error) reject(error); else resolve(); }));
+      if (server.listening) await new Promise<void>((resolve, reject) => {
+        const forceClose = setTimeout(() => { server.closeAllConnections(); }, shutdownGraceMs);
+        forceClose.unref();
+        server.close((error) => {
+          clearTimeout(forceClose);
+          if (error) reject(error); else resolve();
+        });
+      });
       if (ownsPool) await pool.end();
     })();
     return closePromise;

@@ -845,3 +845,11 @@ This section is append-only. It records the red/green evidence for the productio
 - GitHub Actions run `31886571874` completed the entire controlled PostgreSQL/API/web/Chromium contract and printed `Controlled full-stack validation passed (7 findings, migration v4)`. It then failed during cleanup because forced database deletion raced an integration-pool client whose end handshake was still completing, producing PostgreSQL `57P01` as an unhandled pool error.
 - Replaced `DROP DATABASE ... WITH (FORCE)` with bounded ordinary-drop retries only for PostgreSQL `55006` (database still in use). Cleanup now proves every client drains naturally and fails clearly if it does not; it never administratively terminates its own pool. The success line is emitted only after browser, web, API, pool, disposable database, and admin-pool cleanup all finish.
 - Static syntax, lint, and tracked-secret checks pass; the next fresh CI run will validate the strengthened teardown and continue into the production image builds.
+
+### 2026-08-15 18:49 IST — fix 31 published / fix 32 bounded API connection drain RED/GREEN
+
+- Published fix 31 as `53175a8022be8c6de09e2b61053bc01ac061a92c` (`fix 31: drain integration database cleanly`). Local, remote-tracking, and advertised `main` matched; the worktree was clean.
+- GitHub Actions run `31886739157` reached the controlled full-stack teardown and remained in progress because the API's otherwise idempotent `server.close()` waited indefinitely for the long-lived SSE HTTP connection to end. This exposed a real graceful-shutdown gap.
+- RED: the production API server regression now holds an incomplete active HTTP socket open while shutdown begins; shutdown must close that socket and complete, while a repeated close remains safe and signal listeners still return to baseline.
+- GREEN: API shutdown allows a bounded one-second graceful drain, then calls Node's `closeAllConnections()` before closing the database pool. The grace period is validated and injectable only for deterministic tests; production keeps the bounded default. The active-socket test uses 10 ms and proves the connection is destroyed.
+- Focused API/worker tests, lint, typecheck, coverage, syntax, and secret checks pass locally; the replacement CI run will prove the real SSE teardown.

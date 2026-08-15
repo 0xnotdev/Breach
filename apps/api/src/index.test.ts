@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { connect as connectTcp } from "node:net";
+import { once } from "node:events";
 import { createApiHandler, createDemoDataSource, PostgresOperatorDataSource, readApiConfig, serveNodeRequest, startApi } from "./index.js";
 import type { SanitizedFinding } from "@breach/contracts";
 import type { OperatorDataSource, StreamEvent } from "@breach/operator";
@@ -149,6 +151,13 @@ describe("operator API runtime", () => {
     expect(() => readApiConfig({ DATABASE_URL: "postgresql://breach@postgres/breach", OPERATOR_TOKEN: "operator-token-32-bytes-minimum", API_PORT: "70000" })).toThrow("API_PORT");
   });
 
+  it("rejects unsafe shutdown grace periods before opening runtime resources", async () => {
+    const config = { databaseUrl: "postgresql://breach@postgres/breach", operatorToken: "operator-token-32-bytes-minimum", port: 0 };
+    for (const shutdownGraceMs of [-1, 0.5, 30_001]) {
+      await expect(startApi(config, { shutdownGraceMs })).rejects.toThrow("API shutdown grace period is invalid");
+    }
+  });
+
   it("seedNeverCreatesPermanentGreenSafetyMetric", async () => {
     const source = await readFile(new URL("./seed.ts", import.meta.url), "utf8");
     expect(source).not.toMatch(/recordMetric\(["']zero_retention/u);
@@ -227,7 +236,7 @@ describe("operator API runtime", () => {
       expect(await source.latestEventId()).toBeGreaterThan(0);
       expect(await source.listFindings()).toEqual([]);
 
-      const api = await startApi({ databaseUrl: "postgresql://unused/when-pool-injected", operatorToken: token, port: 0 }, { pool });
+      const api = await startApi({ databaseUrl: "postgresql://unused/when-pool-injected", operatorToken: token, port: 0 }, { pool, shutdownGraceMs: 10 });
       const address = api.server.address();
       if (typeof address !== "object" || address === null) throw new Error("Production API did not bind");
       try {
@@ -236,6 +245,13 @@ describe("operator API runtime", () => {
         const findings = await fetch(`http://127.0.0.1:${String(address.port)}/api/findings`, { headers: { authorization: `Bearer ${token}` } });
         expect([live.status, ready.status, findings.status]).toEqual([200, 200, 200]);
         expect(await findings.json()).toEqual({ findings: [] });
+        const activeSocket = connectTcp({ host: "127.0.0.1", port: address.port });
+        await new Promise<void>((resolve, reject) => { activeSocket.once("connect", resolve); activeSocket.once("error", reject); });
+        const activeSocketClosed = once(activeSocket, "close");
+        activeSocket.write("GET /healthz HTTP/1.1\r\nHost: controlled");
+        await api.close();
+        await activeSocketClosed;
+        expect(activeSocket.destroyed).toBe(true);
       } finally {
         await api.close();
         await api.close();
