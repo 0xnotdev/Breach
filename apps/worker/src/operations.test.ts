@@ -53,7 +53,7 @@ describe("operational product contract", () => {
     expect(harness).not.toContain('spawn(npmCommand, ["run", "start"');
     expect(harness).toContain('child.kill("SIGKILL")');
     expect(harness).toContain("await waitForChildExit(child, 5_000)");
-    expect(dockerfile).toContain('ENTRYPOINT ["node", "apps/web/node_modules/vinext/dist/cli.js"');
+    expect(dockerfile).toContain('ENTRYPOINT ["node", "/opt/breach/apps/web/node_modules/vinext/dist/cli.js"');
   });
 
   it("declares API, worker, web, and PostgreSQL services with health checks", async () => {

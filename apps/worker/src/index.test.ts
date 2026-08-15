@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { startWorker, WorkerScheduler } from "./index.js";
+import { isWorkerReady, startWorker, WorkerScheduler } from "./index.js";
 import type { Pool } from "pg";
 import type { WorkerConfig, WorkerRuntime } from "./runtime.js";
 
@@ -51,7 +51,11 @@ describe("worker scheduler", () => {
       quotaStatus: () => ({ remaining: 4_999, limit: 5_000, resetAt: null, secondaryLimited: false, paused: false }),
     };
     let ended = false;
-    const pool = { end: () => { ended = true; return Promise.resolve(); } } as unknown as Pool;
+    let databaseReady = true;
+    const pool = {
+      query: () => databaseReady ? Promise.resolve({ rows: [{ "?column?": 1 }] }) : Promise.reject(new Error("controlled database outage")),
+      end: () => { ended = true; return Promise.resolve(); },
+    } as unknown as Pool;
     const signalListeners = { sigterm: process.listenerCount("SIGTERM"), sigint: process.listenerCount("SIGINT") };
     const worker = await startWorker({ config, pool, runtime });
     const address = worker.health.address();
@@ -62,7 +66,12 @@ describe("worker scheduler", () => {
       await vi.waitFor(() => { expect(cycles).toBeGreaterThan(0); });
       const ready = await fetch(`http://127.0.0.1:${String(address.port)}/readyz`);
       expect(ready.status).toBe(200);
-      await expect(ready.json()).resolves.toMatchObject({ status: "ok", quota: { remaining: 4_999 }, worker: { lastCycleSucceeded: true } });
+      await expect(ready.json()).resolves.toMatchObject({ status: "ok", database: "ready", quota: { remaining: 4_999 }, worker: { lastCycleSucceeded: true } });
+      databaseReady = false;
+      const unavailable = await fetch(`http://127.0.0.1:${String(address.port)}/readyz`);
+      expect(unavailable.status).toBe(503);
+      await expect(unavailable.json()).resolves.toMatchObject({ status: "not_ready", database: "unavailable" });
+      databaseReady = true;
       expect((await fetch(`http://127.0.0.1:${String(address.port)}/unknown`)).status).toBe(503);
     } finally {
       await worker.stop();
@@ -71,6 +80,20 @@ describe("worker scheduler", () => {
     expect(ended).toBe(false);
     expect(process.listenerCount("SIGTERM")).toBe(signalListeners.sigterm);
     expect(process.listenerCount("SIGINT")).toBe(signalListeners.sigint);
+  });
+
+  it("workerReadinessRejectsFatalStallsAndStoppedSchedulers", () => {
+    const now = new Date("2026-08-15T12:10:00.001Z");
+    const baseline = {
+      cyclesCompleted: 1,
+      lastCycleSucceeded: true,
+      lastStartedAt: new Date("2026-08-15T12:05:00.000Z"),
+      lastCompletedAt: new Date("2026-08-15T12:04:59.000Z"),
+    };
+    expect(isWorkerReady({ ...baseline, phase: "running" }, true, now)).toBe(false);
+    expect(isWorkerReady({ ...baseline, phase: "running", lastStartedAt: new Date("2026-08-15T12:09:00.000Z") }, true, now)).toBe(true);
+    expect(isWorkerReady({ ...baseline, phase: "waiting" }, false, now)).toBe(false);
+    expect(isWorkerReady({ ...baseline, phase: "stopped" }, true, now)).toBe(false);
   });
 
   it("reports failed cycles and supports stopping before start", async () => {

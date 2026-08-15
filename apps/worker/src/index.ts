@@ -12,6 +12,29 @@ export interface WorkerSchedulerStatus {
   lastCompletedAt: Date | null;
 }
 
+const workerFatalStallMs = 5 * 60_000;
+
+export function isWorkerReady(
+  status: WorkerSchedulerStatus,
+  databaseReady: boolean,
+  now = new Date(),
+): boolean {
+  if (!databaseReady || status.lastCycleSucceeded !== true || status.phase === "stopping" || status.phase === "stopped") return false;
+  if (!Number.isFinite(now.getTime())) return false;
+  return status.phase !== "running" ||
+    (status.lastStartedAt !== null && now.getTime() - status.lastStartedAt.getTime() <= workerFatalStallMs);
+}
+
+async function canQueryDatabase(pool: Pool): Promise<boolean> {
+  try {
+    const readinessQuery = { text: "SELECT 1", query_timeout: 1_000 };
+    await pool.query(readinessQuery);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class WorkerScheduler {
   readonly #cycle: () => Promise<unknown>;
   readonly #pollIntervalMs: number;
@@ -111,7 +134,25 @@ export async function startWorker(dependencies: WorkerRuntimeDependencies = {}) 
   const pool = dependencies.pool ?? new Pool({ connectionString: config.databaseUrl, max: 4 });
   const runtime = dependencies.runtime ?? await createWorkerRuntime(config, pool);
   const scheduler = new WorkerScheduler({ cycle: () => runtime.runCycle(), pollIntervalMs: config.pollIntervalMs, onError: () => { process.stderr.write("Breach worker cycle failed\n"); } });
-  const health = createServer((request, response) => { const worker = scheduler.status(); const ready = worker.lastCycleSucceeded === true && worker.phase !== "stopping" && worker.phase !== "stopped"; const status = request.url === "/healthz" ? 200 : request.url === "/readyz" && ready ? 200 : 503; response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify({ status: status === 200 ? "ok" : "not_ready", worker, quota: runtime.quotaStatus() })); });
+  const health = createServer((request, response) => {
+    void (async () => {
+      const worker = scheduler.status();
+      const readinessRequest = request.url === "/readyz";
+      const databaseReady = readinessRequest && await canQueryDatabase(pool);
+      const ready = readinessRequest && isWorkerReady(worker, databaseReady);
+      const status = request.url === "/healthz" ? 200 : ready ? 200 : 503;
+      response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify({
+        status: status === 200 ? "ok" : "not_ready",
+        database: readinessRequest ? databaseReady ? "ready" : "unavailable" : "not_checked",
+        worker,
+        quota: runtime.quotaStatus(),
+      }));
+    })().catch(() => {
+      if (!response.headersSent) response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+      if (!response.writableEnded) response.end('{"status":"not_ready","database":"unavailable"}');
+    });
+  });
   await new Promise<void>((resolve) => health.listen(config.healthPort, "0.0.0.0", resolve));
   scheduler.start();
   let stopPromise: Promise<void> | null = null;

@@ -70,7 +70,7 @@ export function FindingsConsole() {
       </aside>
 
       <main className="workspace">
-        <header className="topbar"><div><p className="eyebrow">SECURITY STREAM</p><h1>Findings</h1><p className="subtitle">Meaningful static security evidence from newly committed public repositories.</p></div><div className={`live-pill live-${loadState.kind}`}><span className={`status-dot status-${loadState.kind}`} />{loadState.kind === "ready" ? "LIVE DATA" : loadState.kind.toLocaleUpperCase("en-US")}</div></header>
+        <header className="topbar"><div><p className="eyebrow">SECURITY STREAM</p><h1>Findings</h1><p className="subtitle">Meaningful static security evidence from newly committed public repositories.</p></div><div className={`live-pill live-${loadState.kind}`}><span className={`status-dot status-${loadState.kind}`} />{loadState.kind === "ready" ? "API DATA" : loadState.kind.toLocaleUpperCase("en-US")}</div></header>
         <section className="metric-strip" aria-label="Loaded finding metrics">
           <Metric value={String(loadState.findings.length)} label="loaded findings" /><Metric value={String(visible.length)} label="matching filters" /><Metric value={String(criticalCount)} label="critical" tone="danger" /><Metric value={String(partialCount)} label="partial scans" /><Metric value={String(unreviewedCount)} label="unreviewed" />
         </section>
@@ -93,7 +93,7 @@ export function FindingsConsole() {
           ))}
           {loadState.kind === "loading" && <div className="empty-state" role="status"><strong>Loading findings from the operator API…</strong><p>Only sanitized evidence metadata crosses this boundary.</p></div>}
           {loadState.kind === "error" && <div className="empty-state empty-error" role="alert"><strong>Findings are temporarily unavailable</strong><p>The operator API could not be reached. Existing data is not presented as current.</p><button className="filter-button" type="button" onClick={() => { setLoadState({ kind: "loading", findings: [] }); setReload((value) => value + 1); }}>Retry</button></div>}
-          {loadState.kind === "ready" && visible.length === 0 && <div className="empty-state" role="status"><strong>{loadState.findings.length === 0 ? "No findings have been surfaced yet" : "No surfaced finding matches these filters"}</strong><p>{loadState.findings.length === 0 ? "The live pipeline has not persisted a finding." : "Adjust the filters. This does not mean the repository is secure."}</p></div>}
+          {loadState.kind === "ready" && visible.length === 0 && <div className="empty-state" role="status"><strong>{loadState.findings.length === 0 ? "No findings have been surfaced yet" : "No surfaced finding matches these filters"}</strong><p>{loadState.findings.length === 0 ? "The pipeline has not persisted a finding." : "Adjust the filters. This does not mean the repository is secure."}</p></div>}
         </section>
         <footer className="coverage-footer"><span>STATIC EVIDENCE ONLY</span><p>No runtime verification · No active testing · No deployment confirmation · Source and raw secrets are not retained.</p></footer>
       </main>

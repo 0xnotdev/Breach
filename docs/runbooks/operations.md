@@ -4,7 +4,7 @@
 
 Copy `.env.example` to `.env`, replace the GitHub, HMAC, operator, and PostgreSQL placeholders with independent values, and keep `DISCOVERY_MODE=live`. Run `docker compose up --build`, or `docker compose up --build --detach --wait`. The one-shot `migrate` service applies every pending checksummed migration transactionally before API or worker startup; no separate first-run command is required. Normal startup never seeds demo records.
 
-Check API `http://localhost:8080/readyz`, worker `http://localhost:8081/readyz`, the healthy service set with `docker compose ps`, and the private console at `http://localhost:3000`. Worker `/healthz` proves only that the process serves HTTP. Worker `/readyz` proves an initialized cycle has completed successfully and the scheduler is not stopped.
+Check API `http://localhost:8080/readyz`, worker `http://localhost:8081/readyz`, the healthy service set with `docker compose ps`, and the private console at `http://localhost:3000`. Worker `/healthz` proves only that the process serves HTTP. Worker `/readyz` performs a current PostgreSQL probe and proves an initialized cycle has completed successfully, the scheduler is not stopped, and a running cycle has not exceeded the five-minute fatal-stall bound.
 
 ## Fresh-volume startup and reset
 

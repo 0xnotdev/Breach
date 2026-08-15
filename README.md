@@ -87,7 +87,7 @@ curl --fail http://localhost:8081/readyz
 docker compose ps
 ```
 
-PowerShell equivalent: `Invoke-RestMethod http://localhost:8081/readyz`. API health/readiness are `/healthz` and `/readyz` on port 8080. A worker that is alive but not ready needs investigation; do not treat `/healthz` alone as proof of functional discovery.
+PowerShell equivalent: `Invoke-RestMethod http://localhost:8081/readyz`. Readiness performs a current PostgreSQL probe and fails if the scheduler is stopped, its last cycle failed, or a running cycle exceeds the five-minute fatal-stall bound. API health/readiness are `/healthz` and `/readyz` on port 8080. A worker that is alive but not ready needs investigation; do not treat `/healthz` alone as proof of functional discovery.
 
 ## HOW TO RUN CANARY
 

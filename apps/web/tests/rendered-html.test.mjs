@@ -279,3 +279,12 @@ test("systemDashboardNeverHardCodesMetrics", async () => {
   assert.match(dashboardSource, /Scan duration/u);
   assert.match(dashboardSource, /Discovery to finding/u);
 });
+
+test("frontendNeverClaimsCannedLiveness", async () => {
+  const sources = await Promise.all([
+    "app/ui/OperatorShell.tsx",
+    "app/ui/FindingsConsole.tsx",
+    "app/system/page.tsx",
+  ].map((path) => readFile(new URL(path, templateRoot), "utf8")));
+  assert.doesNotMatch(sources.join("\n"), /Collector online|Last event 2s ago|LIVE DATA|Live API state shown below/u);
+});
