@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { createWorkerRuntime, readWorkerConfig } from "./runtime.js";
+import { createWorkerRuntime, readWorkerConfig, type WorkerConfig, type WorkerRuntime } from "./runtime.js";
 
 export interface WorkerSchedulerStatus {
   phase: "idle" | "running" | "waiting" | "stopping" | "stopped";
@@ -99,9 +99,17 @@ export class WorkerScheduler {
   }
 }
 
-export async function startWorker() {
-  const config = readWorkerConfig(process.env); const pool = new Pool({ connectionString: config.databaseUrl, max: 4 });
-  const runtime = await createWorkerRuntime(config, pool);
+export interface WorkerRuntimeDependencies {
+  readonly config?: WorkerConfig;
+  readonly pool?: Pool;
+  readonly runtime?: WorkerRuntime;
+}
+
+export async function startWorker(dependencies: WorkerRuntimeDependencies = {}) {
+  const config = dependencies.config ?? readWorkerConfig(process.env);
+  const ownsPool = dependencies.pool === undefined;
+  const pool = dependencies.pool ?? new Pool({ connectionString: config.databaseUrl, max: 4 });
+  const runtime = dependencies.runtime ?? await createWorkerRuntime(config, pool);
   const scheduler = new WorkerScheduler({ cycle: () => runtime.runCycle(), pollIntervalMs: config.pollIntervalMs, onError: () => { process.stderr.write("Breach worker cycle failed\n"); } });
   const health = createServer((request, response) => { const worker = scheduler.status(); const ready = worker.lastCycleSucceeded === true && worker.phase !== "stopping" && worker.phase !== "stopped"; const status = request.url === "/healthz" ? 200 : request.url === "/readyz" && ready ? 200 : 503; response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify({ status: status === 200 ? "ok" : "not_ready", worker, quota: runtime.quotaStatus() })); });
   await new Promise<void>((resolve) => health.listen(config.healthPort, "0.0.0.0", resolve));
@@ -109,11 +117,13 @@ export async function startWorker() {
   let stopPromise: Promise<void> | null = null;
   const stop = async () => {
     if (stopPromise !== null) return stopPromise;
-    stopPromise = (async () => { await scheduler.stop(); await new Promise<void>((resolve) => health.close(() => { resolve(); })); await pool.end(); })();
+    stopPromise = (async () => { await scheduler.stop(); await new Promise<void>((resolve) => health.close(() => { resolve(); })); if (ownsPool) await pool.end(); })();
     return stopPromise;
   };
   process.once("SIGTERM", () => { void stop(); }); process.once("SIGINT", () => { void stop(); }); return { health, stop };
 }
 
 const invokedPath = process.argv[1];
+/* v8 ignore start -- trivial process entry wrapper; startWorker is exercised through its injectable production seam. */
 if (invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href) startWorker().catch(() => { process.stderr.write("Breach worker failed to start\n"); process.exitCode = 1; });
+/* v8 ignore stop */

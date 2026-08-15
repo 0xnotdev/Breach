@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { newDb } from "pg-mem";
+import { DataType, newDb } from "pg-mem";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createMetadataStore, type MetadataStore } from "./index.js";
+import { runMigrations } from "./migrations.js";
 
 describe("metadata persistence seam", () => {
   let pool: Pool;
@@ -10,10 +11,12 @@ describe("metadata persistence seam", () => {
 
   beforeEach(async () => {
     const memory = newDb();
+    memory.public.registerFunction({ name: "pg_advisory_xact_lock", args: [DataType.bigint], returns: DataType.bool, implementation: () => true });
     const adapter = memory.adapters.createPg();
     // pg-mem intentionally exposes a node-postgres-compatible constructor without a safe type.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
     pool = new adapter.Pool();
+    await runMigrations(pool);
     store = await createMetadataStore(pool);
   });
 

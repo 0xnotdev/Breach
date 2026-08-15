@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { connect, createServer, type Server } from "node:net";
-import { allowedTunnelTarget, createEgressProxy } from "./proxy.js";
+import { allowedTunnelTarget, createEgressProxy, startEgressProxy } from "./proxy.js";
 
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -65,6 +65,37 @@ describe("egress proxy policy", () => {
         new Promise<void>((resolve, reject) => proxy.close((error) => { if (error === undefined) resolve(); else reject(error); })),
         new Promise<void>((resolve, reject) => upstream.close((error) => { if (error === undefined) resolve(); else reject(error); })),
       ]);
+    }
+  });
+
+  it("starts the production proxy with health-only plain HTTP", async () => {
+    await expect(startEgressProxy(0)).rejects.toThrow("EGRESS_PROXY_PORT");
+    const reservation = createServer(() => undefined);
+    const port = await listen(reservation);
+    await new Promise<void>((resolve, reject) => reservation.close((error) => { if (error === undefined) resolve(); else reject(error); }));
+    const proxy = await startEgressProxy(port);
+    try {
+      const health = await fetch(`http://127.0.0.1:${String(port)}/healthz`);
+      const denied = await fetch(`http://127.0.0.1:${String(port)}/anything`);
+      expect(health.status).toBe(200);
+      expect(await health.json()).toEqual({ status: "live" });
+      expect(denied.status).toBe(403);
+    } finally {
+      await new Promise<void>((resolve, reject) => proxy.close((error) => { if (error === undefined) resolve(); else reject(error); }));
+    }
+  });
+
+  it("returns a bounded gateway failure when an approved upstream is unavailable", async () => {
+    const reservation = createServer(() => undefined);
+    const unavailablePort = await listen(reservation);
+    await new Promise<void>((resolve, reject) => reservation.close((error) => { if (error === undefined) resolve(); else reject(error); }));
+    const proxy = createEgressProxy(() => connect({ port: unavailablePort, host: "127.0.0.1" }));
+    const proxyPort = await listen(proxy);
+    try {
+      await expect(connectResponse(proxyPort, "api.osv.dev:443")).resolves.toMatch(/^HTTP\/1\.1 502 Bad Gateway/u);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve, reject) => proxy.close((error) => { if (error === undefined) resolve(); else reject(error); }));
     }
   });
 });

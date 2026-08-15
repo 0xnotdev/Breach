@@ -74,13 +74,16 @@ export function createDemoDataSource(): OperatorDataSource {
   };
 }
 
-export async function startApi(config = readApiConfig(process.env)) {
-  const pool = new Pool({ connectionString: config.databaseUrl, max: 5 });
+export interface ApiRuntimeDependencies { readonly pool?: Pool }
+
+export async function startApi(config = readApiConfig(process.env), dependencies: ApiRuntimeDependencies = {}) {
+  const ownsPool = dependencies.pool === undefined;
+  const pool = dependencies.pool ?? new Pool({ connectionString: config.databaseUrl, max: 5 });
   const store = await createMetadataStore(pool);
   const handler = createApiHandler(new PostgresOperatorDataSource(pool, store), config.operatorToken, async () => { await pool.query("SELECT 1"); return true; });
   const server = createServer((request, response) => { void serveNodeRequest(request, response, handler); });
   await new Promise<void>((resolve) => server.listen(config.port, "0.0.0.0", resolve));
-  const close = async () => { await new Promise<void>((resolve, reject) => server.close((error) => { if (error) reject(error); else resolve(); })); await pool.end(); };
+  const close = async () => { await new Promise<void>((resolve, reject) => server.close((error) => { if (error) reject(error); else resolve(); })); if (ownsPool) await pool.end(); };
   process.once("SIGTERM", () => { void close(); }); process.once("SIGINT", () => { void close(); });
   return { server, pool, close };
 }
@@ -134,4 +137,6 @@ async function readBody(stream: IncomingMessage, limit: number): Promise<Uint8Ar
 }
 
 const invokedPath = process.argv[1];
+/* v8 ignore start -- trivial process entry wrapper; startApi is exercised through its injectable production seam. */
 if (invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href) startApi().catch(() => { process.stderr.write("Breach API failed to start\n"); process.exitCode = 1; });
+/* v8 ignore stop */

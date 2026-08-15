@@ -1,9 +1,9 @@
 import { Pool } from "pg";
-import { createMetadataStore } from "@breach/storage";
+import { runMigrations } from "@breach/storage/migrations";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
-await createMetadataStore(pool);
+const result = await runMigrations(pool);
 await pool.end();
-process.stdout.write("Metadata migration complete\n");
+process.stdout.write(`Metadata migration complete at version ${String(result.currentVersion)}; applied ${String(result.applied.length)}\n`);

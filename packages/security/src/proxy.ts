@@ -73,9 +73,11 @@ export async function startEgressProxy(port = Number(process.env.EGRESS_PROXY_PO
 }
 
 const invokedPath = process.argv[1];
+/* v8 ignore start -- trivial process entry wrapper; startEgressProxy is exercised directly. */
 if (invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href) {
   startEgressProxy().catch(() => {
     process.stderr.write("Breach egress proxy failed to start\n");
     process.exitCode = 1;
   });
 }
+/* v8 ignore stop */

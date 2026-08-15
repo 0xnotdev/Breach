@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
-import { newDb } from "pg-mem";
+import { DataType, newDb } from "pg-mem";
 import type { Pool } from "pg";
 import { runZeroRetentionCanary } from "../../../worker/src/runtime.js";
+import { runMigrations } from "../../../../packages/storage/src/migrations.js";
 
 const liveFinding = {
   findingId: "76a23814-bfc1-4c15-9444-f7019803e6dd",
@@ -115,11 +116,13 @@ test("canaryRawValueAbsentFromAllRuntimeSurfaces", async ({ page }) => {
   const fixture = await readFile(new URL("../../../../fixtures/canary-repository/credential.txt", import.meta.url), "utf8");
   const rawCanary = fixture.slice(fixture.indexOf("=") + 1).trim();
   const memory = newDb();
+  memory.public.registerFunction({ name: "pg_advisory_xact_lock", args: [DataType.bigint], returns: DataType.bool, implementation: () => true });
   const adapter = memory.adapters.createPg();
   // pg-mem exposes a node-postgres-compatible pool without carrying its concrete type.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
   const pool: Pool = new adapter.Pool();
   try {
+    await runMigrations(pool);
     const report = await runZeroRetentionCanary({
       pool,
       rawCanary,

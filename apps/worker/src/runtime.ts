@@ -127,7 +127,7 @@ async function boundedJson(response: Response, maxBytes: number): Promise<unknow
   return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 }
 
-function requestStatusClass(status: number): "network_error" | "2xx" | "3xx" | "4xx" | "5xx" | "other" {
+export function requestStatusClass(status: number): "network_error" | "2xx" | "3xx" | "4xx" | "5xx" | "other" {
   if (status === 0) return "network_error";
   if (status >= 200 && status < 300) return "2xx";
   if (status >= 300 && status < 400) return "3xx";
@@ -148,9 +148,21 @@ export interface WorkerRuntime {
   quotaStatus(): ReturnType<GitHubQuotaTracker["snapshot"]>;
 }
 
-export async function createWorkerRuntime(config: WorkerConfig, pool: Pool): Promise<WorkerRuntime> {
+export interface WorkerRuntimeDependencies {
+  readonly githubTransport?: GitHubTransport;
+  readonly blobTransport?: BlobStreamTransport;
+  readonly osvTransport?: OsvTransport;
+  readonly now?: () => Date;
+  readonly nowMs?: () => number;
+}
+
+export async function createWorkerRuntime(
+  config: WorkerConfig,
+  pool: Pool,
+  dependencies: WorkerRuntimeDependencies = {},
+): Promise<WorkerRuntime> {
   const store = await createMetadataStore(pool);
-  const quota = new GitHubQuotaTracker();
+  const quota = new GitHubQuotaTracker(dependencies.now);
   const requestCounter = { total: 0 };
   const observeRequest = async (event: GitHubRequestEvent) => {
     requestCounter.total += 1;
@@ -165,10 +177,10 @@ export async function createWorkerRuntime(config: WorkerConfig, pool: Pool): Pro
     await store.recordMetric("github.rate_limit.paused", quotaState.paused ? 1 : 0, {});
     await store.recordMetric("github.rate_limit.secondary_limited", quotaState.secondaryLimited ? 1 : 0, {});
   };
-  const dispatcher = new AsyncSerialDispatcher(new FetchGitHubTransport(), config.githubToken, observeRequest);
-  const discovery = new DiscoveryCollector({ dispatcher, policy: new CandidatePolicy({ minimumScore: config.candidateMinimumScore, targetSelectionRatio: config.targetSelectionRatio }), sink: store });
-  const snapshots = new SnapshotReader(dispatcher, new FetchBlobTransport(config.githubToken, observeRequest));
-  const orchestrator = new ScanOrchestrator({ gate: new CommitGate(dispatcher), snapshots, store, secretScanner: new SecretScanner(config.fingerprintKey), osv: new FetchOsvTransport(), dataflow: new PassiveExploitabilityAnalyzer() });
+  const dispatcher = new AsyncSerialDispatcher(dependencies.githubTransport ?? new FetchGitHubTransport(), config.githubToken, observeRequest);
+  const discovery = new DiscoveryCollector({ dispatcher, policy: new CandidatePolicy({ minimumScore: config.candidateMinimumScore, targetSelectionRatio: config.targetSelectionRatio }), sink: store, ...(dependencies.now === undefined ? {} : { now: dependencies.now }) });
+  const snapshots = new SnapshotReader(dispatcher, dependencies.blobTransport ?? new FetchBlobTransport(config.githubToken, observeRequest), undefined, dependencies.nowMs);
+  const orchestrator = new ScanOrchestrator({ gate: new CommitGate(dispatcher, dependencies.now), snapshots, store, secretScanner: new SecretScanner(config.fingerprintKey), osv: dependencies.osvTransport ?? new FetchOsvTransport(), dataflow: new PassiveExploitabilityAnalyzer(), ...(dependencies.now === undefined ? {} : { now: dependencies.now }), ...(dependencies.nowMs === undefined ? {} : { nowMs: dependencies.nowMs }) });
   const discoveryLimits = { maxPages: config.maxDiscoveryPages, maxRequests: config.maxDiscoveryRequests, maxElapsedMs: config.maxDiscoveryElapsedMs };
 
   return {
@@ -190,9 +202,9 @@ export async function createWorkerRuntime(config: WorkerConfig, pool: Pool): Pro
       const due = await pool.query<{ repo_id: string; full_name: string; commit_check_attempts: number }>(
         `SELECT repo_id, full_name, commit_check_attempts FROM repository_candidates
          WHERE candidate_state = 'WAITING_FOR_COMMIT'
-           AND (next_commit_check_at IS NULL OR next_commit_check_at <= CURRENT_TIMESTAMP)
+           AND (next_commit_check_at IS NULL OR next_commit_check_at <= $2)
          ORDER BY priority_score DESC, repo_id DESC LIMIT $1`,
-        [config.maxCommitChecksPerCycle],
+        [config.maxCommitChecksPerCycle, (dependencies.now ?? (() => new Date()))()],
       );
       let processed = 0;
       let scansStarted = 0;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PassiveExploitabilityAnalyzer } from "./index.js";
 
 const file = (path: string, source: string) => ({ path, bytes: new TextEncoder().encode(source) });
@@ -218,5 +218,53 @@ describe("bounded passive exploitability analysis", () => {
     expect(result.findings).toContainEqual(
       expect.objectContaining({ level: "possible", completeDataflowObserved: false }),
     );
+  });
+
+  it("models JavaScript syntax variants, dynamic Next routes, and Python import aliases", () => {
+    const next = new PassiveExploitabilityAnalyzer().analyze([
+      file("app/api/files/[name]/route.tsx", "export function DELETE(request: Request) { return exec(request); }"),
+      file("components/helper.jsx", "const helper = function(value) { return eval(value); };"),
+      file("scripts/helper.js", "function disconnected(value) { return deserialize(value); }"),
+    ]);
+    expect(next.findings).toContainEqual(expect.objectContaining({ category: "command_injection", entryPoint: "DELETE /api/files/:name" }));
+    expect(next.findings).toContainEqual(expect.objectContaining({ category: "code_injection", level: "possible" }));
+    expect(next.findings).toContainEqual(expect.objectContaining({ category: "unsafe_deserialization", level: "possible" }));
+
+    const python = new PassiveExploitabilityAnalyzer().analyze([
+      file("routes.py", 'from service import download as fetch_remote\n@app.route("/proxy")\ndef proxy():\n    url = request.args.get("url")\n    return fetch_remote(url)\n'),
+      file("service.py", "def download(url):\n    return requests.get(url)\n"),
+    ]);
+    expect(python.findings).toContainEqual(expect.objectContaining({ category: "ssrf", entryPoint: "GET /proxy", completeDataflowObserved: true }));
+  });
+
+  it("reports invalid and exhausted analysis budgets deterministically", () => {
+    expect(() => new PassiveExploitabilityAnalyzer({ maxFiles: 0, maxGraphNodes: 1, maxDepth: 1, timeoutMs: 1 })).toThrow("positive");
+    const fileLimited = new PassiveExploitabilityAnalyzer({ maxFiles: 1, maxGraphNodes: 1_000, maxDepth: 10, timeoutMs: 1_000 }).analyze([
+      file("one.ts", "function one() { return 1; }"),
+      file("two.ts", "function two() { return 2; }"),
+    ]);
+    expect(fileLimited.diagnostics.reasons).toContain("file_limit");
+    const graphLimited = new PassiveExploitabilityAnalyzer({ maxFiles: 2, maxGraphNodes: 1, maxDepth: 10, timeoutMs: 1_000 }).analyze([
+      file("route.ts", 'router.get("/", (req, res) => exec(req.query.value));'),
+    ]);
+    expect(graphLimited.diagnostics.reasons).toContain("graph_node_limit");
+
+    const clock = vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(2);
+    try {
+      const timedOut = new PassiveExploitabilityAnalyzer({ maxFiles: 1, maxGraphNodes: 100, maxDepth: 10, timeoutMs: 1 }).analyze([file("route.ts", "function route() { return 1; }")]);
+      expect(timedOut.diagnostics.reasons).toContain("timeout");
+    } finally {
+      clock.mockRestore();
+    }
+
+    const traversalClock = vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(2);
+    try {
+      const traversalTimeout = new PassiveExploitabilityAnalyzer({ maxFiles: 1, maxGraphNodes: 100, maxDepth: 10, timeoutMs: 1 }).analyze([
+        file("route.ts", 'router.post("/run", (req, res) => handlers["run"](req.body.value));'),
+      ]);
+      expect(traversalTimeout.diagnostics.reasons).toContain("timeout");
+    } finally {
+      traversalClock.mockRestore();
+    }
   });
 });

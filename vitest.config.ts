@@ -4,7 +4,14 @@ export default defineConfig({
   test: {
     include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
     coverage: {
-      include: ["packages/**/src/index.ts"],
+      include: [
+        "packages/**/src/**/*.ts",
+        "apps/worker/src/runtime.ts",
+        "apps/worker/src/index.ts",
+        "apps/api/src/index.ts",
+        "apps/api/src/system-metrics.ts",
+      ],
+      exclude: ["**/*.test.ts", "**/*.d.ts"],
       provider: "v8",
       reporter: ["text", "json-summary"],
       thresholds: {

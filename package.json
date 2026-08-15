@@ -18,6 +18,7 @@
     "test:coverage": "vitest run --coverage",
     "test:web": "npm run test --workspace @breach/web",
     "test:browser": "npm run test:browser --workspace @breach/web",
+    "test:integration": "node scripts/controlled-full-stack.mjs",
     "test:watch": "vitest",
     "audit:dependencies": "npm audit --omit=dev --audit-level=high",
     "audit:secrets": "node scripts/audit-tracked-secrets.mjs",

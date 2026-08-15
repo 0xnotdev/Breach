@@ -130,6 +130,54 @@ describe("passive secret and dependency analysis", () => {
     expect(parseDependencies("package-lock.json", bytes("{not json"))).toEqual([]);
   });
 
+  it("covers prioritized lockfile variants without executing package managers", () => {
+    const fixtures: Array<[string, string, Array<[string, string]>]> = [
+      ["package.json", '{"dependencies":{"alpha":"1.0.0"},"devDependencies":{"beta":"2.0.0"},"optionalDependencies":{"gamma":"3.0.0"}}', [["alpha", "1.0.0"], ["beta", "2.0.0"], ["gamma", "3.0.0"]]],
+      ["package-lock.json", '{"packages":{"":"ignored","node_modules/alpha":{"version":"1.0.0"},"node_modules/invalid":null},"dependencies":{"beta":{"version":"2.0.0"},"invalid":false}}', [["alpha", "1.0.0"], ["beta", "2.0.0"]]],
+      ["Pipfile.lock", '{"default":{"flask":{"version":"==2.0.1"}},"develop":{"pytest":{"version":"7.0.0"},"invalid":null}}', [["flask", "2.0.1"], ["pytest", "7.0.0"]]],
+      ["poetry.lock", '[[package]]\nname = "httpx"\nversion = "0.24.1"\n', [["httpx", "0.24.1"]]],
+      ["uv.lock", '[[package]]\nname = "starlette"\nversion = "0.30.0"\n', [["starlette", "0.30.0"]]],
+      ["Cargo.toml", '[package]\nname = "fixture"\n[dependencies]\nserde = { version = "1.0.130", features = ["derive"] }\npython = "^3"\n', [["serde", "1.0.130"]]],
+      ["gradle.lockfile", "org.example:demo:1.2.0=runtimeClasspath\n", [["org.example:demo", "1.2.0"]]],
+      ["composer.lock", '{"packages":[],"packages-dev":[null,{"name":"vendor/tool","version":"1.4.2"}]}', [["vendor/tool", "1.4.2"]]],
+      ["packages.lock.json", '{"dependencies":{"net8.0":{"Newtonsoft.Json":{"resolved":"13.0.1"},"invalid":null}}}', [["Newtonsoft.Json", "13.0.1"]]],
+    ];
+    for (const [path, content, expected] of fixtures) {
+      const dependencies = parseDependencies(path, bytes(content));
+      expect(dependencies.map(({ name, version }) => [name, version])).toEqual(expected);
+    }
+    expect(parseDependencies("Pipfile.lock", bytes("null"))).toEqual([]);
+    expect(parseDependencies("composer.lock", bytes("[]"))).toEqual([]);
+    expect(parseDependencies("packages.lock.json", bytes("not-json"))).toEqual([]);
+  });
+
+  it("sanitizes optional advisory summaries and malformed vulnerability entries", async () => {
+    const dependencies = [
+      { ecosystem: "npm", name: "alpha", version: "1.0.0", path: "package-lock.json" },
+      { ecosystem: "npm", name: "beta", version: "2.0.0", path: "package-lock.json" },
+      { ecosystem: "npm", name: "gamma", version: "3.0.0", path: "package-lock.json" },
+    ];
+    const findings = await correlateOsv(dependencies, {
+      queryBatch: () => Promise.resolve({ results: [
+        { vulns: [{ id: "", summary: "ignored" }, { id: "OSV-CLEAN", summary: "<b>bounded</b>\u0000  summary" }] },
+        { vulns: [{ id: "OSV-NO-SUMMARY" }] },
+        { vulns: [{ id: "OSV-EMPTY-SUMMARY", summary: "<i></i>" }] },
+      ] }),
+    });
+    expect(findings).toHaveLength(3);
+    expect(findings[0]).toMatchObject({ advisoryId: "OSV-CLEAN", summary: "bounded summary" });
+    expect(findings[1]).not.toHaveProperty("summary");
+    expect(findings[2]).not.toHaveProperty("summary");
+  });
+
+  it("accepts binary fingerprint keys and detects credentialed database URLs", () => {
+    expect(() => new SecretScanner(new Uint8Array(31))).toThrow("at least 32 bytes");
+    const scanner = new SecretScanner(new Uint8Array(32).fill(7));
+    const findings = scanner.scan([{ path: "config.env", bytes: bytes("DATABASE_URL=postgresql://service:q7W9e2R4t6Y8u0I2@db.acme.net/app\n") }]);
+    expect(findings).toEqual([expect.objectContaining({ type: "Credentialed database URL" })]);
+    expect(JSON.stringify(findings)).not.toContain("q7W9e2R4t6Y8u0I2");
+  });
+
   it("queries OSV in batches of at most 100 and returns advisory metadata only", async () => {
     const calls: OsvBatchRequest[] = [];
     const transport: OsvTransport = {

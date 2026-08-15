@@ -6,7 +6,7 @@ const read = (path: string) => readFile(new URL(path, root), "utf8");
 
 describe("operational product contract", () => {
   it("ships configuration, migration, seed, CI, and all operator runbooks", async () => {
-    const files = await Promise.all([".env.example", "README.md", "packages/storage/migrations/001_metadata.sql", ".github/workflows/ci.yml", "docs/runbooks/operations.md", "docs/runbooks/incident-response.md", "docs/runbooks/disclosure.md"].map(read));
+    const files = await Promise.all([".env.example", "README.md", "packages/storage/migrations/001_initial.sql", ".github/workflows/ci.yml", "docs/runbooks/operations.md", "docs/runbooks/incident-response.md", "docs/runbooks/disclosure.md"].map(read));
     for (const content of files) expect(content.trim().length).toBeGreaterThan(100);
     expect(files[0]).toMatch(/GITHUB_TOKEN=.*read-only/i);
     expect(files[1]).toMatch(/zero.retention/i);
@@ -16,10 +16,12 @@ describe("operational product contract", () => {
 
   it("declares API, worker, web, and PostgreSQL services with health checks", async () => {
     const compose = await read("compose.yaml");
-    for (const service of ["postgres", "api", "egress-proxy", "worker", "web"]) expect(compose).toMatch(new RegExp(`\\n  ${service}:`));
+    for (const service of ["postgres", "migrate", "api", "egress-proxy", "worker", "web"]) expect(compose).toMatch(new RegExp(`\\n  ${service}:`));
     expect(compose.match(/healthcheck:/g)).toHaveLength(5);
     expect(compose).toMatch(/8080:8080/);
     expect(compose).toMatch(/3000:3000/);
+    expect(compose).toMatch(/migrate:\s*\n[\s\S]*service_completed_successfully/u);
+    expect(compose).toMatch(/API_INTERNAL_URL:\s*http:\/\/api:8080/u);
   });
 
   it("workerHasNoDirectInternetRouteOutsideAllowlistProxy", async () => {

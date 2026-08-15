@@ -1,0 +1,10 @@
+CREATE TABLE discovery_state (stream_name TEXT PRIMARY KEY, last_repo_id BIGINT NOT NULL CHECK (last_repo_id >= 0), bootstrapped_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE repository_candidates (repo_id BIGINT PRIMARY KEY CHECK (repo_id > 0), full_name TEXT NOT NULL CHECK (full_name <> ''), html_url TEXT NOT NULL CHECK (html_url <> ''), discovered_at TIMESTAMPTZ NOT NULL, priority_score INTEGER NOT NULL, candidate_state TEXT NOT NULL, selection_reason TEXT NOT NULL DEFAULT 'selected', commit_check_attempts INTEGER NOT NULL DEFAULT 0 CHECK (commit_check_attempts >= 0), next_commit_check_at TIMESTAMPTZ, first_commit_detected_at TIMESTAMPTZ, head_sha TEXT, last_scan_status TEXT);
+CREATE TABLE scans (scan_id TEXT PRIMARY KEY, repo_id BIGINT NOT NULL REFERENCES repository_candidates(repo_id), head_sha TEXT NOT NULL, claim_token TEXT NOT NULL, coverage JSONB NOT NULL, state TEXT NOT NULL DEFAULT 'SCANNING', started_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ, UNIQUE(repo_id, head_sha));
+CREATE TABLE findings (finding_id TEXT PRIMARY KEY, repo_id BIGINT NOT NULL, detected_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL);
+CREATE TABLE finding_reviews (finding_id TEXT PRIMARY KEY REFERENCES findings(finding_id) ON DELETE CASCADE, review_state TEXT NOT NULL, review_note TEXT, reviewed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE state_events (event_id BIGSERIAL PRIMARY KEY, repo_id BIGINT NOT NULL, from_state TEXT, to_state TEXT NOT NULL, occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE metric_samples (metric_name TEXT NOT NULL, measured_at TIMESTAMPTZ NOT NULL, metric_value DOUBLE PRECISION NOT NULL, labels JSONB NOT NULL DEFAULT '{}', PRIMARY KEY(metric_name, measured_at));
+CREATE INDEX candidates_due_idx ON repository_candidates (candidate_state, next_commit_check_at, priority_score DESC);
+CREATE INDEX findings_detected_idx ON findings (detected_at DESC);
+CREATE INDEX events_occurred_idx ON state_events (event_id, occurred_at DESC);

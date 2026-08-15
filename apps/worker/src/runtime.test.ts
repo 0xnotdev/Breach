@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
-import { newDb } from "pg-mem";
+import { DataType, newDb } from "pg-mem";
 import type { Pool } from "pg";
-import { FetchBlobTransport, FetchGitHubTransport, readWorkerConfig, runControlledDemo, runZeroRetentionCanary } from "./runtime.js";
+import { createWorkerRuntime, FetchBlobTransport, FetchGitHubTransport, FetchOsvTransport, readWorkerConfig, requestStatusClass, runControlledDemo, runZeroRetentionCanary } from "./runtime.js";
 import { CandidatePolicy } from "@breach/github";
+import { runMigrations } from "@breach/storage/migrations";
 
 async function controlledCanary(): Promise<string> {
   const fixture = await readFile(new URL("../../../fixtures/canary-repository/credential.txt", import.meta.url), "utf8");
@@ -28,6 +29,12 @@ describe("worker runtime", () => {
     expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", TARGET_SELECTION_RATIO: "0" })).toThrow("TARGET_SELECTION_RATIO");
     expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", MAX_DISCOVERY_PAGES_PER_CYCLE: "0" })).toThrow("MAX_DISCOVERY_PAGES_PER_CYCLE");
     expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", GITHUB_QUOTA_RESERVE: "-1" })).toThrow("GITHUB_QUOTA_RESERVE");
+    expect(() => readWorkerConfig({})).toThrow("DATABASE_URL");
+    expect(() => readWorkerConfig({ DATABASE_URL: "file:///tmp/breach", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long" })).toThrow("DATABASE_URL");
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x" })).toThrow("GITHUB_TOKEN");
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token" })).toThrow("FINGERPRINT_HMAC_KEY");
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", POLL_INTERVAL_MS: "4999" })).toThrow("POLL_INTERVAL_MS");
+    expect(() => readWorkerConfig({ DATABASE_URL: "postgresql://x", GITHUB_TOKEN: "github-read-token", FINGERPRINT_HMAC_KEY: "fingerprint-key-at-least-32-bytes-long", WORKER_HEALTH_PORT: "0" })).toThrow("WORKER_HEALTH_PORT");
   });
 
   it("productionCandidatePolicySelectsRealisticHighValueRepos", () => {
@@ -77,6 +84,102 @@ describe("worker runtime", () => {
     }
   });
 
+  it("productionHttpTransportsBoundResponsesAndReportBlobRequests", async () => {
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      network.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
+      await expect(new FetchGitHubTransport().get("https://api.github.com/repositories", {})).resolves.toMatchObject({ status: 200, body: { ok: true } });
+
+      network.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(new FetchGitHubTransport().get("https://api.github.com/repositories", {})).resolves.toMatchObject({ status: 204, body: null });
+
+      network.mockResolvedValueOnce(new Response("{}", { status: 200, headers: { "content-length": String(13 * 1024 * 1024) } }));
+      await expect(new FetchGitHubTransport().get("https://api.github.com/repositories", {})).rejects.toThrow("exceeds bound");
+
+      const observed: Array<{ family: string; status: number }> = [];
+      network.mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "x-ratelimit-remaining": "4998" } }));
+      const chunks: number[] = [];
+      for await (const chunk of new FetchBlobTransport("read-token", (event) => { observed.push(event); }).stream(`https://api.github.com/repos/fixture/repo/git/blobs/${"a".repeat(40)}`, {})) chunks.push(...chunk);
+      expect(chunks).toEqual([1, 2, 3]);
+      expect(observed).toEqual([expect.objectContaining({ family: "blob", status: 200 })]);
+
+      network.mockRejectedValueOnce(new Error("controlled network failure"));
+      await expect((async () => {
+        for await (const chunk of new FetchBlobTransport("read-token", (event) => { observed.push(event); }).stream(`https://api.github.com/repos/fixture/repo/git/blobs/${"b".repeat(40)}`, {})) { void chunk; }
+      })()).rejects.toThrow("controlled network failure");
+      expect(observed.at(-1)).toEqual({ family: "blob", status: 0 });
+
+      network.mockResolvedValueOnce(new Response(JSON.stringify({ results: [{}] }), { status: 200 }));
+      await expect(new FetchOsvTransport().queryBatch({ queries: [{ package: { ecosystem: "npm", name: "fixture" }, version: "1.0.0" }] })).resolves.toEqual({ results: [{}] });
+      await expect(new FetchOsvTransport().queryBatch({ queries: Array.from({ length: 101 }, () => ({ package: { ecosystem: "npm", name: "fixture" }, version: "1.0.0" })) })).rejects.toThrow("batch limit");
+      network.mockResolvedValueOnce(new Response("denied", { status: 503 }));
+      await expect(new FetchOsvTransport().queryBatch({ queries: [] })).rejects.toThrow("status 503");
+
+      network.mockResolvedValueOnce(new Response(null, { status: 200 }));
+      await expect((async () => {
+        for await (const chunk of new FetchBlobTransport("read-token").stream(`https://api.github.com/repos/fixture/repo/git/blobs/${"c".repeat(40)}`, {})) { void chunk; }
+      })()).rejects.toThrow("status 200");
+    } finally {
+      network.mockRestore();
+    }
+  });
+
+  it("classifies request outcomes into low-cardinality metric labels", () => {
+    expect([0, 204, 304, 404, 503, 700].map(requestStatusClass)).toEqual(["network_error", "2xx", "3xx", "4xx", "5xx", "other"]);
+  });
+
+  it("productionRuntimeCompletesControlledCycle", async () => {
+    const memory = newDb();
+    memory.public.registerFunction({ name: "pg_advisory_xact_lock", args: [DataType.bigint], returns: DataType.bool, implementation: () => true });
+    const adapter = memory.adapters.createPg();
+    // pg-mem exposes a node-postgres-compatible pool without carrying its concrete type.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
+    const pool: Pool = new adapter.Pool();
+    const raw = await controlledCanary();
+    const headSha = "d".repeat(40);
+    const blobSha = "e".repeat(40);
+    const bytes = new TextEncoder().encode(`AWS_SECRET_ACCESS_KEY=${raw}\n`);
+    try {
+      await runMigrations(pool);
+      const config = readWorkerConfig({
+        DATABASE_URL: "postgresql://breach@postgres/breach",
+        GITHUB_TOKEN: "read-only-token",
+        FINGERPRINT_HMAC_KEY: "production-runtime-fingerprint-key-32-bytes",
+        DISCOVERY_MODE: "historical",
+        DISCOVERY_START_CURSOR: "100",
+        MAX_DISCOVERY_PAGES_PER_CYCLE: "1",
+        MAX_DISCOVERY_REQUESTS_PER_CYCLE: "1",
+      });
+      const runtime = await createWorkerRuntime(config, pool, {
+        now: () => new Date("2026-08-15T12:00:00.000Z"),
+        nowMs: (() => { let tick = 0; return () => { tick += 1; return tick; }; })(),
+        githubTransport: {
+          get: (target) => {
+            const url = new URL(target);
+            const headers = { "x-ratelimit-remaining": "4999", "x-ratelimit-limit": "5000" };
+            if (url.pathname === "/repositories") return Promise.resolve({ status: 200, headers, body: [{ id: 101, name: "payments-auth-api", full_name: "fixture/payments-auth-api", html_url: "https://github.com/fixture/payments-auth-api", description: "Cloud backend server deployed with Docker Kubernetes and Terraform", fork: false, owner: { type: "Organization" } }] });
+            if (url.pathname.endsWith("/commits")) return Promise.resolve({ status: 200, headers, body: [{ sha: headSha }] });
+            if (url.pathname.endsWith(`/git/trees/${headSha}`)) return Promise.resolve({ status: 200, headers, body: { tree: [{ path: ".env", type: "blob", sha: blobSha, size: bytes.byteLength }], truncated: false } });
+            throw new Error("Unexpected controlled GitHub request");
+          },
+        },
+        blobTransport: { async *stream() { yield await Promise.resolve(bytes); } },
+        osvTransport: { queryBatch: ({ queries }) => Promise.resolve({ results: queries.map(() => ({})) }) },
+      });
+
+      await expect(runtime.runCycle()).resolves.toMatchObject({ nextCursor: 101, processed: 1, scansStarted: 1, quotaPaused: false });
+      const candidate = await pool.query<{ candidate_state: string }>("SELECT candidate_state FROM repository_candidates WHERE repo_id = 101");
+      expect(candidate.rows[0]?.candidate_state).toBe("SCANNED_FINDINGS");
+      const database = JSON.stringify((await pool.query("SELECT payload FROM findings")).rows);
+      expect(database).not.toContain(raw);
+      expect(database).toContain("fingerprint");
+      expect(runtime.quotaStatus()).toMatchObject({ remaining: 4999, limit: 5000, paused: false });
+    } finally {
+      bytes.fill(0);
+      await pool.end();
+    }
+  });
+
   it("runs discovery through review with no source persistence", async () => {
     const raw = await controlledCanary();
     const result = await runControlledDemo(raw);
@@ -91,12 +194,14 @@ describe("worker runtime", () => {
 
   it("canaryRawValueAbsentFromAllRuntimeSurfaces", async () => {
     const memory = newDb();
+    memory.public.registerFunction({ name: "pg_advisory_xact_lock", args: [DataType.bigint], returns: DataType.bool, implementation: () => true });
     const adapter = memory.adapters.createPg();
     // pg-mem exposes a node-postgres-compatible pool without carrying its concrete type.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
     const pool: Pool = new adapter.Pool();
     const raw = await controlledCanary();
     try {
+      await runMigrations(pool);
       const report = await runZeroRetentionCanary({
         pool,
         rawCanary: raw,

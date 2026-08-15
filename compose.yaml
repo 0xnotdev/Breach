@@ -13,6 +13,22 @@ services:
     networks: [metadata]
     volumes: [metadata:/var/lib/postgresql/data]
 
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    entrypoint: ["node", "apps/api/dist/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://breach:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/breach
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    networks: [metadata]
+
   api:
     build:
       context: .
@@ -20,6 +36,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql://breach:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/breach
       OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN}
@@ -34,6 +52,17 @@ services:
     tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    ulimits:
+      nofile: 256
+      core: 0
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 128
+    init: true
+    restart: unless-stopped
     networks: [metadata]
 
   egress-proxy:
@@ -62,6 +91,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       egress-proxy:
         condition: service_healthy
     environment:
@@ -106,6 +137,9 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      API_INTERNAL_URL: http://api:8080
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN}
     ports: ["3000:3000"]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -116,6 +150,17 @@ services:
     tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    ulimits:
+      nofile: 256
+      core: 0
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 128
+    init: true
+    restart: unless-stopped
     networks: [metadata]
 
 networks:
