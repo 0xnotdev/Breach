@@ -88,8 +88,17 @@ export function escapeUntrustedText(value: string, maxCharacters = 256): string 
 export type RetentionSurfaces = Readonly<Record<string, string>>;
 
 export class CanaryAuditor {
-  constructor(readonly rawCanary: string, readonly expectedFingerprint: string) {
-    if (rawCanary.length < 16 || !/^[a-f0-9]{64}$/u.test(expectedFingerprint)) throw new Error("Invalid canary audit values");
+  constructor(
+    readonly rawCanary: string,
+    readonly expectedFingerprint: string,
+    readonly maximumFingerprintOccurrences = 1,
+  ) {
+    if (
+      rawCanary.length < 16 ||
+      !/^[a-f0-9]{64}$/u.test(expectedFingerprint) ||
+      !Number.isSafeInteger(maximumFingerprintOccurrences) ||
+      maximumFingerprintOccurrences < 1
+    ) throw new Error("Invalid canary audit values");
   }
 
   audit(surfaces: RetentionSurfaces): { rawOccurrences: number; fingerprintOccurrences: number; surfacesChecked: number } {
@@ -97,7 +106,9 @@ export class CanaryAuditor {
     const rawOccurrences = values.reduce((count, value) => count + occurrences(value, this.rawCanary), 0);
     const fingerprintOccurrences = values.reduce((count, value) => count + occurrences(value, this.expectedFingerprint), 0);
     if (rawOccurrences !== 0) throw new Error("Raw canary retained in audited surface");
-    if (fingerprintOccurrences !== 1) throw new Error(`Expected exactly one fingerprint, observed ${String(fingerprintOccurrences)}`);
+    if (fingerprintOccurrences < 1 || fingerprintOccurrences > this.maximumFingerprintOccurrences) {
+      throw new Error(`Expected between one and ${String(this.maximumFingerprintOccurrences)} fingerprints, observed ${String(fingerprintOccurrences)}`);
+    }
     return { rawOccurrences, fingerprintOccurrences, surfacesChecked: values.length };
   }
 }

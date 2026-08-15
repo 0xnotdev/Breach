@@ -18,4 +18,8 @@ YAML and XML inputs are byte/depth bounded. YAML custom tags and aliases are den
 
 ## Canary proof
 
-The controlled fixture contains a structurally valid but nonfunctional value. The audit fails unless the raw value occurs zero times across database, logs, output, errors, browser data, queues, and writable layers, and the full HMAC-SHA256 fingerprint occurs exactly once. Fingerprint keys must be at least 32 random bytes and supplied through the runtime secret mechanism.
+The controlled fixture contains a structurally valid but nonfunctional value. `npm run canary --workspace @breach/worker` runs it through the real commit gate, Git tree/blob snapshot reader, analyzers, PostgreSQL store, and operator serializer. The Chromium acceptance test adds rendered DOM plus local/session storage to the same audit. The audit fails unless the raw value occurs zero times across every inspected surface, transient snapshot buffers are cleared, and the full HMAC-SHA256 fingerprint occurs only within the bounded sanitized metadata representations expected for that run.
+
+The runtime command requires `DATABASE_URL` and `FINGERPRINT_HMAC_KEY`; `CANARY_FIXTURE_PATH` may override the controlled fixture location. It records `zero_retention.canary.last_run`, `.success`, `.raw_occurrences`, and `.fingerprint_occurrences` only after a successful runtime audit. It also records zero source-persistence, retention-violation, and credential-verification observations for that measured run. The seed command never writes safety metrics. Fingerprint keys must be at least 32 random bytes and supplied through the runtime secret mechanism.
+
+This is a no-durable-source-retention claim, not a zero-memory claim. Repository bytes necessarily exist transiently in TLS/network buffers, bounded Node buffers, process RAM, and parser structures. Host swap must therefore remain disabled or separately encrypted and audited.

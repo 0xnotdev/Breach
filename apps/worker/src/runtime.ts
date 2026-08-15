@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { Pool } from "pg";
 import { SecretScanner, type OsvBatchRequest, type OsvBatchResponse, type OsvTransport } from "@breach/analyzers";
 import type { CandidateState, Coverage, ReviewState, SanitizedFinding } from "@breach/contracts";
@@ -14,8 +15,9 @@ import {
   type GitHubResponse,
   type GitHubTransport,
 } from "@breach/github";
+import { OperatorRouter, type OperatorDataSource } from "@breach/operator";
 import { ScanOrchestrator, type LifecycleStore } from "@breach/orchestrator";
-import { EgressPolicy } from "@breach/security";
+import { CanaryAuditor, EgressPolicy, type RetentionSurfaces } from "@breach/security";
 import { SnapshotReader, type BlobStreamTransport } from "@breach/snapshot";
 import { createMetadataStore } from "@breach/storage";
 
@@ -225,6 +227,193 @@ export async function runWorkerCycle(
   } finally {
     if (pool === undefined) await ownedPool.end();
   }
+}
+
+export interface ZeroRetentionCanaryOptions {
+  readonly pool: Pool;
+  readonly rawCanary: string;
+  readonly fingerprintKey: string;
+  readonly now?: () => Date;
+  readonly collectExternalSurfaces?: (finding: SanitizedFinding) => Promise<RetentionSurfaces>;
+  readonly log?: (event: Readonly<Record<string, string | number | boolean>>) => void;
+}
+
+export interface ZeroRetentionCanaryReport {
+  readonly rawOccurrences: number;
+  readonly fingerprintOccurrences: number;
+  readonly surfacesChecked: readonly string[];
+  readonly ephemeralBytesCleared: boolean;
+  readonly finding: SanitizedFinding;
+}
+
+export async function runZeroRetentionCanary(options: ZeroRetentionCanaryOptions): Promise<ZeroRetentionCanaryReport> {
+  if (options.rawCanary.length < 16) throw new Error("Controlled canary must be at least 16 characters");
+  const now = options.now ?? (() => new Date());
+  const measuredAt = now();
+  if (!Number.isFinite(measuredAt.getTime())) throw new Error("Canary clock returned an invalid timestamp");
+  const store = await createMetadataStore(options.pool);
+  const fullName = "fixture/runtime-canary";
+  const previousCanaries = await options.pool.query<{ repo_id: string }>(
+    "SELECT repo_id FROM repository_candidates WHERE full_name = $1",
+    [fullName],
+  );
+  for (const previous of previousCanaries.rows) {
+    await options.pool.query("DELETE FROM finding_reviews WHERE finding_id IN (SELECT finding_id FROM findings WHERE repo_id = $1)", [previous.repo_id]);
+    await options.pool.query("DELETE FROM findings WHERE repo_id = $1", [previous.repo_id]);
+    await options.pool.query("DELETE FROM scans WHERE repo_id = $1", [previous.repo_id]);
+    await options.pool.query("DELETE FROM state_events WHERE repo_id = $1", [previous.repo_id]);
+    await options.pool.query("DELETE FROM repository_candidates WHERE repo_id = $1", [previous.repo_id]);
+  }
+  const latestRepository = await options.pool.query<{ repo_id: string }>(
+    "SELECT repo_id FROM repository_candidates ORDER BY repo_id DESC LIMIT 1",
+  );
+  const latestRepositoryId = Number(latestRepository.rows[0]?.repo_id ?? 9_100_024);
+  const repoId = Math.max(9_100_024, latestRepositoryId) + 1;
+  if (!Number.isSafeInteger(repoId)) throw new Error("No safe repository identifier remains for the controlled canary");
+  const headSha = createHmac("sha256", options.fingerprintKey)
+    .update(`runtime-canary:${String(repoId)}:${measuredAt.toISOString()}`)
+    .digest("hex")
+    .slice(0, 40);
+  const blobSha = "b".repeat(40);
+  const fixtureBytes = new TextEncoder().encode(`AWS_SECRET_ACCESS_KEY=${options.rawCanary}\n`);
+  const expectedFingerprint = createHmac("sha256", options.fingerprintKey)
+    .update(options.rawCanary)
+    .digest("hex");
+  const logEntries: Array<Readonly<Record<string, string | number | boolean>>> = [];
+  const log = (event: Readonly<Record<string, string | number | boolean>>) => {
+    logEntries.push(event);
+    options.log?.(event);
+  };
+  log({ event: "zero_retention_canary_started", repoId });
+
+  await store.recordDiscoveryPage("zero-retention-runtime-canary", repoId, [{
+    repoId,
+    fullName,
+    htmlUrl: `https://github.com/${fullName}`,
+    discoveredAt: measuredAt,
+    priorityScore: 100,
+    candidateState: "WAITING_FOR_COMMIT",
+    selectionReason: "selected",
+  }]);
+
+  const github = new AsyncSerialDispatcher({
+    get: (target) => {
+      const url = new URL(target);
+      if (url.pathname.endsWith("/commits")) {
+        return Promise.resolve({ status: 200, body: [{ sha: headSha }], headers: {} });
+      }
+      if (url.pathname.endsWith(`/git/trees/${headSha}`)) {
+        return Promise.resolve({
+          status: 200,
+          body: { tree: [{ path: "credential.txt", type: "blob", sha: blobSha, size: fixtureBytes.byteLength }], truncated: false },
+          headers: {},
+        });
+      }
+      throw new Error("Controlled canary received an unexpected GitHub metadata request");
+    },
+  });
+  const snapshotReader = new SnapshotReader(github, {
+    async *stream(target) {
+      if (!new URL(target).pathname.endsWith(`/git/blobs/${blobSha}`)) {
+        throw new Error("Controlled canary received an unexpected GitHub blob request");
+      }
+      yield await Promise.resolve(fixtureBytes);
+    },
+  });
+  const releasedBuffers: Uint8Array[] = [];
+  const snapshots = {
+    async read(permit: Parameters<SnapshotReader["read"]>[0]) {
+      const snapshot = await snapshotReader.read(permit);
+      for (const file of snapshot.files) releasedBuffers.push(file.bytes);
+      return snapshot;
+    },
+  };
+  let monotonicNow = 0;
+  const orchestrator = new ScanOrchestrator({
+    gate: new CommitGate(github, now),
+    snapshots,
+    store,
+    secretScanner: new SecretScanner(options.fingerprintKey),
+    osv: { queryBatch: ({ queries }) => Promise.resolve({ results: queries.map(() => ({})) }) },
+    dataflow: new PassiveExploitabilityAnalyzer(),
+    now,
+    nowMs: () => { monotonicNow += 1; return monotonicNow; },
+  });
+  const outcome = await orchestrator.process({ repoId, fullName, attempts: 0 });
+  if (outcome.kind !== "scanned" || outcome.findingCount < 1) {
+    throw new Error("Controlled canary did not complete with a finding");
+  }
+  log({ event: "zero_retention_canary_scanned", repoId, outcome: outcome.state, findingCount: outcome.findingCount });
+
+  const ephemeralBytesCleared = releasedBuffers.length > 0 && releasedBuffers.every((bytes) => bytes.every((value) => value === 0));
+  if (!ephemeralBytesCleared) throw new Error("Ephemeral canary buffers were not cleared");
+  fixtureBytes.fill(0);
+
+  const findingIds = await options.pool.query<{ finding_id: string }>(
+    "SELECT finding_id FROM findings WHERE repo_id = $1 ORDER BY finding_id",
+    [repoId],
+  );
+  const findingId = findingIds.rows[0]?.finding_id;
+  const finding = findingId === undefined ? null : await store.getFinding(findingId);
+  if (finding === null || finding.secretEvidence?.fingerprint !== expectedFingerprint) {
+    throw new Error("Controlled canary fingerprint was not persisted as sanitized metadata");
+  }
+
+  const data: OperatorDataSource = {
+    listFindings: async () => {
+      const ids = await options.pool.query<{ finding_id: string }>("SELECT finding_id FROM findings ORDER BY detected_at DESC");
+      const findings = await Promise.all(ids.rows.map(({ finding_id }) => store.getFinding(finding_id)));
+      return findings.filter((item): item is SanitizedFinding => item !== null);
+    },
+    getFinding: (id) => store.getFinding(id),
+    reviewFinding: (id, state, note) => store.reviewFinding(id, state, ...(note === undefined ? [] : [note])),
+    listEvents: () => Promise.resolve([]),
+    latestEventId: () => Promise.resolve(0),
+    getSystemMetrics: () => Promise.resolve([]),
+  };
+  const operatorToken = "runtime-canary-operator-token";
+  const router = new OperatorRouter(data, operatorToken);
+  const authorized = { authorization: `Bearer ${operatorToken}` };
+  const [apiList, apiDetail, apiError] = await Promise.all([
+    router.handle(new Request("http://canary.local/api/findings", { headers: authorized })).then((response) => response.text()),
+    router.handle(new Request(`http://canary.local/api/findings/${finding.findingId}`, { headers: authorized })).then((response) => response.text()),
+    router.handle(new Request("http://canary.local/api/findings/not-a-uuid", { headers: authorized })).then((response) => response.text()),
+  ]);
+
+  const tableNames = ["discovery_state", "repository_candidates", "scans", "findings", "finding_reviews", "state_events", "metric_samples"] as const;
+  const durableRows: Record<string, readonly unknown[]> = {};
+  for (const table of tableNames) {
+    const result = await options.pool.query(`SELECT * FROM ${table}`);
+    durableRows[table] = result.rows;
+  }
+  const external = await options.collectExternalSurfaces?.(finding) ?? {};
+  const reserved = new Set(["postgresql", "applicationLogs", "apiList", "apiDetail", "errorPaths", "ephemeralBuffers"]);
+  if (Object.keys(external).some((name) => reserved.has(name))) throw new Error("External canary surface name is reserved");
+  const surfaces: RetentionSurfaces = {
+    postgresql: JSON.stringify(durableRows),
+    applicationLogs: JSON.stringify(logEntries),
+    apiList,
+    apiDetail,
+    errorPaths: apiError,
+    ephemeralBuffers: JSON.stringify(releasedBuffers),
+    ...external,
+  };
+  const proof = new CanaryAuditor(options.rawCanary, expectedFingerprint, 8).audit(surfaces);
+
+  await store.recordMetric("zero_retention.canary.last_run", measuredAt.getTime(), { unit: "unix_ms", source: "runtime" });
+  await store.recordMetric("zero_retention.canary.success", 1, { unit: "boolean", source: "runtime" });
+  await store.recordMetric("zero_retention.canary.raw_occurrences", proof.rawOccurrences, { unit: "count", source: "runtime" });
+  await store.recordMetric("zero_retention.canary.fingerprint_occurrences", proof.fingerprintOccurrences, { unit: "count", source: "runtime" });
+  await store.recordMetric("zero_retention.violations", proof.rawOccurrences, { unit: "count", source: "runtime" });
+  await store.recordMetric("zero_retention.source_persisted", 0, { unit: "count", source: "runtime" });
+  await store.recordMetric("zero_retention.credential_verification_performed", 0, { unit: "count", source: "runtime" });
+
+  return {
+    ...proof,
+    surfacesChecked: Object.keys(surfaces),
+    ephemeralBytesCleared,
+    finding,
+  };
 }
 
 export async function runControlledDemo(raw: string) {

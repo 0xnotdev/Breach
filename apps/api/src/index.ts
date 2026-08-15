@@ -70,7 +70,7 @@ export function createDemoDataSource(): OperatorDataSource {
     reviewFinding: (_id, state) => { current = { ...current, reviewState: state }; return Promise.resolve(current); },
     listEvents: () => Promise.resolve([{ eventId: 1, repoId: 1, fullName: "fixture/canary", state: "SCANNED_FINDINGS", occurredAt: "2026-08-12T12:00:00.000Z" }]),
     latestEventId: () => Promise.resolve(1),
-    getSystemMetrics: () => Promise.resolve([{ name: "zero_retention.canary", value: 1, unit: "healthy" }]),
+    getSystemMetrics: () => Promise.resolve([]),
   };
 }
 

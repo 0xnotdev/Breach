@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "scripts": { "build": "tsc -b", "start": "node dist/index.js", "test": "vitest run src/runtime.test.ts", "demo": "node dist/demo.js" },
-  "dependencies": { "@breach/analyzers": "0.1.0", "@breach/contracts": "0.1.0", "@breach/dataflow": "0.1.0", "@breach/github": "0.1.0", "@breach/orchestrator": "0.1.0", "@breach/security": "0.1.0", "@breach/snapshot": "0.1.0", "@breach/storage": "0.1.0", "pg": "8.16.3" }
+  "scripts": { "build": "tsc -b", "start": "node dist/index.js", "test": "vitest run src/runtime.test.ts", "demo": "node dist/demo.js", "canary": "node dist/canary.js" },
+  "dependencies": { "@breach/analyzers": "0.1.0", "@breach/contracts": "0.1.0", "@breach/dataflow": "0.1.0", "@breach/github": "0.1.0", "@breach/operator": "0.1.0", "@breach/orchestrator": "0.1.0", "@breach/security": "0.1.0", "@breach/snapshot": "0.1.0", "@breach/storage": "0.1.0", "pg": "8.16.3" },
+  "devDependencies": { "pg-mem": "^3.0.5" }
 }

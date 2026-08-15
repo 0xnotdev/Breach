@@ -1,4 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { newDb } from "pg-mem";
+import type { Pool } from "pg";
+import { runZeroRetentionCanary } from "../../../worker/src/runtime.js";
 
 const liveFinding = {
   findingId: "76a23814-bfc1-4c15-9444-f7019803e6dd",
@@ -105,4 +109,52 @@ test("renders persisted secret dependency and configuration evidence", async ({ 
     for (const expected of evidenceCase.expected) await expect(page.getByText(expected, { exact: false }).first()).toBeVisible();
   }
   await expect(page.locator("body")).not.toContainText(secretFingerprint);
+});
+
+test("canaryRawValueAbsentFromAllRuntimeSurfaces", async ({ page }) => {
+  const fixture = await readFile(new URL("../../../../fixtures/canary-repository/credential.txt", import.meta.url), "utf8");
+  const rawCanary = fixture.slice(fixture.indexOf("=") + 1).trim();
+  const memory = newDb();
+  const adapter = memory.adapters.createPg();
+  // pg-mem exposes a node-postgres-compatible pool without carrying its concrete type.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
+  const pool: Pool = new adapter.Pool();
+  try {
+    const report = await runZeroRetentionCanary({
+      pool,
+      rawCanary,
+      fingerprintKey: "browser-canary-fingerprint-key-32-bytes",
+      collectExternalSurfaces: async (finding) => {
+        await page.route(`**/api/findings/${finding.findingId}`, async (route) => route.fulfill({
+          json: {
+            finding,
+            openOnGitHub: `${finding.repository.url}/blob/${finding.revision.sha}/${finding.secretEvidence?.path ?? "credential.txt"}`,
+          },
+        }));
+        await page.goto(`/findings/${finding.findingId}`);
+        await expect(page.getByRole("heading", { name: "Exposed Secret" })).toBeVisible();
+        const rendered = await page.locator("body").innerText();
+        const browserStorage = await page.evaluate(() => ({
+          local: { ...localStorage },
+          session: { ...sessionStorage },
+        }));
+        return {
+          webRenderedOutput: rendered,
+          browserLocalStorage: JSON.stringify(browserStorage.local),
+          browserSessionStorage: JSON.stringify(browserStorage.session),
+        };
+      },
+    });
+
+    expect(report.rawOccurrences).toBe(0);
+    expect(report.ephemeralBytesCleared).toBe(true);
+    expect(report.surfacesChecked).toEqual(expect.arrayContaining([
+      "postgresql", "applicationLogs", "apiList", "apiDetail", "errorPaths",
+      "webRenderedOutput", "browserLocalStorage", "browserSessionStorage",
+    ]));
+    await expect(page.locator("body")).not.toContainText(rawCanary);
+    await expect(page.getByText("Raw value NOT RETAINED", { exact: true })).toBeVisible();
+  } finally {
+    await pool.end();
+  }
 });

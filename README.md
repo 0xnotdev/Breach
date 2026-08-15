@@ -16,7 +16,9 @@ Run `npm ci --ignore-scripts`, `npm run verify`, and `npx playwright install chr
 
 ## Testing
 
-`npm test` covers domain, persistence, gates, inspection, analyzers, exploitability, orchestration, API, worker, zero-retention, and operations. `npm run test --workspace @breach/web` verifies server rendering. `npm run test:browser --workspace @breach/web` runs operator journeys against a production server. `npm run lint`, `npm run typecheck`, `npm run build`, and `docker compose config --quiet` are required gates.
+`npm test` covers domain, persistence, gates, inspection, analyzers, exploitability, orchestration, API, worker, zero-retention, and operations. `npm run test --workspace @breach/web` verifies server rendering. `npm run test:browser --workspace @breach/web` runs operator journeys against a production server, including the scanner-produced canary finding, rendered DOM, and browser-storage audit. `npm run lint`, `npm run typecheck`, `npm run build`, and `docker compose config --quiet` are required gates.
+
+After building, run the reproducible canary against the intended metadata database with `npm run canary --workspace @breach/worker`. It requires `DATABASE_URL` and `FINGERPRINT_HMAC_KEY`, emits only counts/surface names, and persists real canary measurements. The demo seed is visibly labeled `DEMO-SEED` and never writes a green safety metric.
 
 ## Interpretation and limits
 

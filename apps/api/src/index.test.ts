@@ -33,7 +33,8 @@ describe("operator API runtime", () => {
           { metric_name: "github.requests.total", hour_sum: "80", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
           { metric_name: "github.requests_per_completed_scan", hour_sum: "40", hour_average: "5", latest_value: "4", latest_at: new Date("2026-08-15T12:00:00.000Z") },
           { metric_name: "scan.failed", hour_sum: "2", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
-          { metric_name: "zero_retention.canary", hour_sum: "1", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
+          { metric_name: "zero_retention.canary.last_run", hour_sum: "1786795200000", hour_average: "1786795200000", latest_value: "1786795200000", latest_at: new Date("2026-08-15T12:00:00.000Z") },
+          { metric_name: "zero_retention.canary.success", hour_sum: "1", hour_average: "1", latest_value: "1", latest_at: new Date("2026-08-15T12:00:00.000Z") },
         ] });
         return Promise.reject(new Error("Unexpected metrics query"));
       },
@@ -46,6 +47,7 @@ describe("operator API runtime", () => {
     expect(metrics.get("findings.per_1000_scans")?.value).toBe(500);
     expect(metrics.get("github.requests_per_completed_scan")?.value).toBe(5);
     expect(metrics.get("safety.canary.result")?.value).toBe(1);
+    expect(metrics.get("safety.canary.last_run")?.value).toBe(1_786_795_200_000);
     expect(metrics.has("safety.retention_violations")).toBe(false);
   });
 
@@ -84,6 +86,12 @@ describe("operator API runtime", () => {
   it("validates least-privilege runtime configuration", () => {
     expect(readApiConfig({ DATABASE_URL: "postgresql://breach@postgres/breach", OPERATOR_TOKEN: "operator-token-32-bytes-minimum", API_PORT: "8080" })).toEqual({ databaseUrl: "postgresql://breach@postgres/breach", operatorToken: "operator-token-32-bytes-minimum", port: 8080 });
     expect(() => readApiConfig({ DATABASE_URL: "file:///tmp/db", OPERATOR_TOKEN: "short" })).toThrow();
+  });
+
+  it("seedNeverCreatesPermanentGreenSafetyMetric", async () => {
+    const source = await readFile(new URL("./seed.ts", import.meta.url), "utf8");
+    expect(source).not.toMatch(/recordMetric\(["']zero_retention/u);
+    expect(source).toMatch(/DEMO-SEED/u);
   });
 
   it("serves health/readiness and sanitized demo data through the real router", async () => {

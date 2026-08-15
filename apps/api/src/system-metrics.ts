@@ -136,7 +136,8 @@ export async function readPostgresSystemMetrics(pool: Pool): Promise<readonly Sy
       WHERE metric_name IN (
         'github.requests.total', 'github.requests.discovery', 'github.requests_per_completed_scan',
         'github.rate_limited', 'github.rate_limit.remaining', 'github.rate_limit.limit', 'github.rate_limit.reset_at',
-        'scan.failed', 'zero_retention.canary', 'zero_retention.violations',
+        'scan.failed', 'zero_retention.canary.last_run', 'zero_retention.canary.success',
+        'zero_retention.canary.raw_occurrences', 'zero_retention.canary.fingerprint_occurrences', 'zero_retention.violations',
         'zero_retention.source_persisted', 'zero_retention.credential_verification_performed'
       )
       GROUP BY metric_name`),
@@ -217,14 +218,8 @@ export async function readPostgresSystemMetrics(pool: Pool): Promise<readonly Sy
     if (completed !== null && completed + failures > 0) add(metrics, "scan.failure_rate", failures / (completed + failures), "ratio");
   }
 
-  const canary = telemetry.get("zero_retention.canary");
-  if (canary !== undefined) {
-    add(metrics, "safety.canary.result", canary.latest_value, "boolean");
-    if (canary.latest_at !== null) {
-      const timestamp = new Date(canary.latest_at).getTime();
-      if (Number.isFinite(timestamp)) add(metrics, "safety.canary.last_run", timestamp, "unix_ms");
-    }
-  }
+  telemetryMetric("zero_retention.canary.last_run", "safety.canary.last_run", "latest_value", "unix_ms");
+  telemetryMetric("zero_retention.canary.success", "safety.canary.result", "latest_value", "boolean");
   telemetryMetric("zero_retention.violations", "safety.retention_violations", "latest_value", "count");
   telemetryMetric("zero_retention.source_persisted", "safety.source_persisted", "latest_value", "count");
   telemetryMetric("zero_retention.credential_verification_performed", "safety.credential_verification_performed", "latest_value", "count");

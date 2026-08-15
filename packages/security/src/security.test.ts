@@ -14,8 +14,10 @@ describe("security boundary", () => {
     expect(escapeUntrustedText("a\tb\nc\rd\u0080", 100)).toBe("a\\tb\\nc\\rd\\u{80}");
     expect(() => new CanaryAuditor("short", "x")).toThrow();
     const auditor = new CanaryAuditor("raw-canary-value-123", "a".repeat(64));
-    expect(() => auditor.audit({ none: "" })).toThrow(/exactly one/i);
+    expect(() => auditor.audit({ none: "" })).toThrow(/between one and 1/i);
     expect(() => auditor.audit({ one: "a".repeat(64), two: "a".repeat(64) })).toThrow(/observed 2/i);
+    expect(new CanaryAuditor("raw-canary-value-123", "a".repeat(64), 2).audit({ one: "a".repeat(64), two: "a".repeat(64) })).toMatchObject({ fingerprintOccurrences: 2 });
+    expect(() => new CanaryAuditor("raw-canary-value-123", "a".repeat(64), 0)).toThrow();
   });
 
   it("allows only declared service destinations and never follows repository URLs", () => {

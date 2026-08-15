@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
-import { readWorkerConfig, runControlledDemo } from "./runtime.js";
+import { newDb } from "pg-mem";
+import type { Pool } from "pg";
+import { readWorkerConfig, runControlledDemo, runZeroRetentionCanary } from "./runtime.js";
 import { CandidatePolicy } from "@breach/github";
 
 async function controlledCanary(): Promise<string> {
@@ -60,5 +62,52 @@ describe("worker runtime", () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("AWS_SECRET_ACCESS_KEY");
     expect(serialized).not.toContain(raw);
+  });
+
+  it("canaryRawValueAbsentFromAllRuntimeSurfaces", async () => {
+    const memory = newDb();
+    const adapter = memory.adapters.createPg();
+    // pg-mem exposes a node-postgres-compatible pool without carrying its concrete type.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
+    const pool: Pool = new adapter.Pool();
+    const raw = await controlledCanary();
+    try {
+      const report = await runZeroRetentionCanary({
+        pool,
+        rawCanary: raw,
+        fingerprintKey: "runtime-canary-fingerprint-key-32-bytes",
+        now: () => new Date("2026-08-15T12:00:00.000Z"),
+        collectExternalSurfaces: (finding) => Promise.resolve({
+          webRenderedOutput: `<main>${finding.repository.fullName} ${finding.secretEvidence?.fingerprint.slice(0, 12) ?? ""}… Raw value NOT RETAINED</main>`,
+          browserLocalStorage: "{}",
+          browserSessionStorage: "{}",
+        }),
+      });
+
+      expect(report.rawOccurrences).toBe(0);
+      expect(report.fingerprintOccurrences).toBeGreaterThanOrEqual(1);
+      expect(report.fingerprintOccurrences).toBeLessThanOrEqual(8);
+      expect(report.ephemeralBytesCleared).toBe(true);
+      expect(report.surfacesChecked).toEqual(expect.arrayContaining([
+        "postgresql", "applicationLogs", "apiList", "apiDetail", "errorPaths",
+        "webRenderedOutput", "browserLocalStorage", "browserSessionStorage",
+      ]));
+      expect(JSON.stringify(report)).not.toContain(raw);
+
+      const samples = await pool.query<{ metric_name: string; metric_value: number }>(
+        "SELECT metric_name, metric_value FROM metric_samples WHERE metric_name LIKE 'zero_retention.canary.%' ORDER BY metric_name",
+      );
+      expect(samples.rows.map((row) => [row.metric_name, row.metric_value])).toEqual([
+        ["zero_retention.canary.fingerprint_occurrences", report.fingerprintOccurrences],
+        ["zero_retention.canary.last_run", 1_786_795_200_000],
+        ["zero_retention.canary.raw_occurrences", 0],
+        ["zero_retention.canary.success", 1],
+      ]);
+      const durable = JSON.stringify((await pool.query("SELECT * FROM findings")).rows);
+      expect(durable).not.toContain(raw);
+      expect(durable).not.toContain("AWS_SECRET_ACCESS_KEY");
+    } finally {
+      await pool.end();
+    }
   });
 });

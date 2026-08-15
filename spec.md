@@ -96,7 +96,7 @@ The source report defines the behaviors and interfaces below; these are the agre
 | Orchestrator | Public state transitions, coverage, cleanup, no prohibited interactions | Fake GitHub/OSV, test Postgres, fixed clock |
 | Operator HTTP/SSE | Filters, ranking, detail, review transition, metrics, stream events, redacted schemas | In-process server + test Postgres |
 | Operator browser | User-visible navigation, finding comprehension, review action, live stream, system health, no raw secret/source | Playwright against full local stack |
-| Zero-retention audit | Fake canary appears only as one fingerprint and nowhere in DB/log/output/writable layer scan | Controlled fixture and test environment |
+| Zero-retention audit | Raw fake canary appears zero times; its HMAC appears only in bounded intended sanitized metadata representations | Controlled fixture and test environment |
 
 Mocks/fakes are permitted only at true system seams: GitHub, OSV, time, persistence, process limits, and browser network transport. Internal modules are exercised together.
 
@@ -208,7 +208,8 @@ Every checkpoint follows a vertical red -> green cycle: add one failing behavior
 - Hardened worker/container: non-root, read-only root, tmpfs/no source volume, no host/Docker socket, disabled privilege escalation, resource/process/file-descriptor limits, core dumps off, documented swap requirement, allowlisted egress design.
 - Parser defenses: safe YAML, XXE/network-disabled XML, depth/size bounds, defensive Unicode, terminal/control escaping, URL non-following.
 - Controlled fake canary repository contains no functional credential.
-- Automated audit proves the canary is absent from DB, logs, output, error data, browser data, queues, and writable layers while exactly one HMAC fingerprint remains.
+- A reproducible runtime audit runs the fixture through commit gate, bounded snapshot, analyzers, PostgreSQL, API serialization, rendered web output, and browser storage; it proves zero raw occurrences, cleared ephemeral snapshot buffers, and only bounded intended HMAC fingerprint representations.
+- Successful runtime proof records `zero_retention.canary.last_run`, `zero_retention.canary.success`, `zero_retention.canary.raw_occurrences`, and `zero_retention.canary.fingerprint_occurrences`; seed data never creates a safety metric.
 - Tests prove discovered credentials are never verified and repository URLs never cause egress.
 
 ### CP14 — Complete runnable product and operations
@@ -245,4 +246,3 @@ Every checkpoint follows a vertical red -> green cycle: add one failing behavior
 ## 9. Definition of done
 
 The build is complete only when CP00–CP15 are complete, the full validation suite passes from a clean install, safety invariants are demonstrated by tests and the canary audit, the operator UI meets all eight report acceptance criteria, all required documentation is current, all work is pushed to GitHub, the worktree is clean, and the remote commit is verified.
-
